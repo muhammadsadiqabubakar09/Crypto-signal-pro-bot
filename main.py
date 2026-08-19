@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+from threading import Thread
 from flask import Flask
 import ccxt.async_support as ccxt
 import pandas as pd
@@ -11,19 +12,23 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEBSERVER ---
+# --- FLASK WEBSERVER (DON RENDER PORT BINDING) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Crypto Signal Pro+ Bot is Live!", 200
+    return "Crypto Signal Pro+ Bot is Live & Healthy!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = "8982651587:AAFdVu5qARVO6aXgvUwC6f2QL1TquDFSqqY"  # Sanya bot token din ka a nan
+TELEGRAM_TOKEN = "8982651587:AAFdVu5qARVO6aXgvUwC6f2QL1TquDFSqqY"  # Sanya bot token dinka a nan
 PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
 SENT_SIGNALS = {}
 
-# Primary & Fallback Exchanges (Amfani da MEXC & Gate don gujewar IP restrictions)
+# Primary & Fallback Exchanges
 exchange_primary = ccxt.mexc({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 exchange_fallback = ccxt.gate({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 
@@ -208,6 +213,11 @@ async def market_scanner(application):
             await asyncio.sleep(10)
 
 async def main():
+    # Gudanar da Flask a background thread
+    server_thread = Thread(target=run_flask)
+    server_thread.daemon = True
+    server_thread.start()
+
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     
