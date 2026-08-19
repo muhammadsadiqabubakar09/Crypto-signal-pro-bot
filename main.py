@@ -23,26 +23,26 @@ TELEGRAM_TOKEN = "8982651587:AAFdVu5qARVO6aXgvUwC6f2QL1TquDFSqqY"  # Insert your
 PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
 SENT_SIGNALS = {}
 
-# Primary & Secondary Exchanges for Fallback
-bybit_futures = ccxt.bybit({'options': {'defaultType': 'future'}, 'enableRateLimit': True})
-kucoin_futures = ccxt.kucoinfutures({'enableRateLimit': True})
+# Primary & Fallback Exchanges to Bypass CloudFront IP Blocks
+exchange_primary = ccxt.binance({'options': {'defaultType': 'future'}, 'enableRateLimit': True})
+exchange_fallback = ccxt.gateio({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 
-# --- DATA FETCHING WITH FALLBACK ---
+# --- DATA FETCHING WITH FALLBACK ENGINE ---
 async def fetch_ohlcv(symbol, timeframe, limit=100):
     try:
-        data = await bybit_futures.fetch_ohlcv(symbol, timeframe, limit=limit)
+        data = await exchange_primary.fetch_ohlcv(symbol, timeframe, limit=limit)
         return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     except Exception as e:
-        logging.warning(f"Bybit fetch failed for {symbol}, switching to KuCoin fallback: {e}")
+        logging.warning(f"Primary exchange fetch failed for {symbol}: {e}")
         
     try:
-        data = await kucoin_futures.fetch_ohlcv(symbol, timeframe, limit=limit)
+        data = await exchange_fallback.fetch_ohlcv(symbol, timeframe, limit=limit)
         return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     except Exception as e:
         logging.error(f"Error fetching data from both exchanges for {symbol}: {e}")
         return None
 
-# --- CANDLESTICK PATTERN ENGINE (3 CLOSED CANDLES) ---
+# --- CANDLESTICK PATTERN ENGINE ---
 def check_candle_confirmations(df):
     c1 = df.iloc[-2]  # Last closed candle
     c2 = df.iloc[-3]  # Previous closed candle
@@ -72,7 +72,7 @@ def check_candle_confirmations(df):
     return bullish_confirmed, bearish_confirmed, pattern_name
 
 async def analyze_market(symbol):
-    # Fetching 3 Timeframes (4H, 1H, 15M)
+    # Fetching 3 Timeframes
     df_4h = await fetch_ohlcv(symbol, '4h', limit=50)
     df_1h = await fetch_ohlcv(symbol, '1h', limit=50)
     df_15m = await fetch_ohlcv(symbol, '15m', limit=100)
@@ -80,7 +80,7 @@ async def analyze_market(symbol):
     if df_4h is None or df_1h is None or df_15m is None or len(df_15m) < 20:
         return []
 
-    # Indicators Calculations (15M)
+    # Indicators Calculations (15m)
     df_15m['EMA_50'] = ta.trend.ema_indicator(df_15m['close'], window=50)
     df_15m['EMA_200'] = ta.trend.ema_indicator(df_15m['close'], window=200)
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
@@ -94,21 +94,18 @@ async def analyze_market(symbol):
     close_price = last_closed['close']
     atr = last_closed['ATR']
 
+    # Higher Timeframe Trend Alignment
+    df_4h['EMA_50'] = ta.trend.ema_indicator(df_4h['close'], window=50)
+    df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
+
+    trend_4h = "BULLISH" if df_4h.iloc[-2]['close'] > df_4h.iloc[-2]['EMA_50'] else "BEARISH"
+    trend_1h = "BULLISH" if df_1h.iloc[-2]['close'] > df_1h.iloc[-2]['EMA_50'] else "BEARISH"
+
     # Support & Resistance Levels
     recent_support = df_15m['low'].tail(20).min()
     recent_resistance = df_15m['high'].tail(20).max()
     at_support = abs(close_price - recent_support) / close_price < 0.005
     at_resistance = abs(close_price - recent_resistance) / close_price < 0.005
-
-    # Higher Timeframe Trend Alignment (4H & 1H)
-    df_4h['EMA_50'] = ta.trend.ema_indicator(df_4h['close'], window=50)
-    df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
-
-    trend_4h_bullish = df_4h.iloc[-2]['close'] > df_4h.iloc[-2]['EMA_50']
-    trend_1h_bullish = df_1h.iloc[-2]['close'] > df_1h.iloc[-2]['EMA_50']
-
-    trend_4h_bearish = df_4h.iloc[-2]['close'] < df_4h.iloc[-2]['EMA_50']
-    trend_1h_bearish = df_1h.iloc[-2]['close'] < df_1h.iloc[-2]['EMA_50']
 
     # SMC Fair Value Gap (FVG) Logic
     fvg_bullish = df_15m.iloc[-2]['low'] > df_15m.iloc[-4]['high']
@@ -123,17 +120,17 @@ async def analyze_market(symbol):
     futures_signal = None
     f_reasons = []
 
-    if trend_4h_bullish and trend_1h_bullish and last_closed['RSI'] < 65 and last_closed['EMA_50'] > last_closed['EMA_200'] and bull_confirm:
+    if trend_4h == "BULLISH" and trend_1h == "BULLISH" and last_closed['RSI'] < 65 and last_closed['EMA_50'] > last_closed['EMA_200'] and bull_confirm:
         if last_closed['MACD'] > last_closed['MACD_SIGNAL']:
             futures_signal = "LONG 🟢"
-            f_reasons = ["4H & 1H Bullish Multi-Timeframe Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "15m EMA & MACD Alignment"]
+            f_reasons = ["4H & 1H Bullish Trend Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "15m EMA & MACD Alignment"]
             if at_support: f_reasons.append("Key Support Zone Bounce")
             if fvg_bullish: f_reasons.append("SMC Bullish Fair Value Gap (FVG)")
 
-    elif trend_4h_bearish and trend_1h_bearish and last_closed['RSI'] > 35 and last_closed['EMA_50'] < last_closed['EMA_200'] and bear_confirm:
+    elif trend_4h == "BEARISH" and trend_1h == "BEARISH" and last_closed['RSI'] > 35 and last_closed['EMA_50'] < last_closed['EMA_200'] and bear_confirm:
         if last_closed['MACD'] < last_closed['MACD_SIGNAL']:
             futures_signal = "SHORT 🔴"
-            f_reasons = ["4H & 1H Bearish Multi-Timeframe Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "15m EMA & MACD Alignment"]
+            f_reasons = ["4H & 1H Bearish Trend Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "15m EMA & MACD Alignment"]
             if at_resistance: f_reasons.append("Key Resistance Zone Rejection")
             if fvg_bearish: f_reasons.append("SMC Bearish Fair Value Gap (FVG)")
 
@@ -150,17 +147,17 @@ async def analyze_market(symbol):
 
             signals_to_send.append({
                 'type': 'FUTURES ⚡', 'symbol': symbol, 'direction': futures_signal,
-                'confidence': "96%", 'entry': f"{round(close_price, 2)}",
+                'confidence': "95%", 'entry': f"{round(close_price, 2)}",
                 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'sl': sl,
                 'leverage': "10x - 20x", 'reasons': f_reasons
             })
 
     # --- 2. SPOT SIGNALS (BUY / ACCUMULATE) ---
-    if trend_4h_bullish and trend_1h_bullish and last_closed['RSI'] < 45 and bull_confirm:
+    if trend_4h == "BULLISH" and trend_1h == "BULLISH" and last_closed['RSI'] < 45 and bull_confirm:
         key = f"{symbol}_SPOT_BUY"
         if key not in SENT_SIGNALS:
             SENT_SIGNALS[key] = True
-            spot_reasons = ["4H & 1H Bullish Multi-Timeframe Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "Oversold RSI Dip on Bullish Trend"]
+            spot_reasons = ["4H & 1H Bullish Trend Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "Oversold RSI Dip on Bullish Trend"]
             if at_support: spot_reasons.append("Major Support Rejection Level")
             if fvg_bullish: spot_reasons.append("SMC Spot Liquidity / FVG Gap")
 
