@@ -23,9 +23,9 @@ TELEGRAM_TOKEN = "8982651587:AAFdVu5qARVO6aXgvUwC6f2QL1TquDFSqqY"  # Insert your
 PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
 SENT_SIGNALS = {}
 
-# Primary & Fallback Exchanges to Bypass CloudFront IP Blocks
-exchange_primary = ccxt.binance({'options': {'defaultType': 'future'}, 'enableRateLimit': True})
-exchange_fallback = ccxt.gateio({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
+# Primary & Fallback Exchanges (GYARA: ccxt.gate maimakon ccxt.gateio)
+exchange_primary = ccxt.binanceusdm({'enableRateLimit': True})
+exchange_fallback = ccxt.gate({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 
 # --- DATA FETCHING WITH FALLBACK ENGINE ---
 async def fetch_ohlcv(symbol, timeframe, limit=100):
@@ -72,7 +72,7 @@ def check_candle_confirmations(df):
     return bullish_confirmed, bearish_confirmed, pattern_name
 
 async def analyze_market(symbol):
-    # Fetching 3 Timeframes
+    # Fetching 3 Timeframes (4H, 1H, 15M)
     df_4h = await fetch_ohlcv(symbol, '4h', limit=50)
     df_1h = await fetch_ohlcv(symbol, '1h', limit=50)
     df_15m = await fetch_ohlcv(symbol, '15m', limit=100)
@@ -94,7 +94,7 @@ async def analyze_market(symbol):
     close_price = last_closed['close']
     atr = last_closed['ATR']
 
-    # Higher Timeframe Trend Alignment
+    # Higher Timeframe Trend Alignment (4H & 1H)
     df_4h['EMA_50'] = ta.trend.ema_indicator(df_4h['close'], window=50)
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
 
