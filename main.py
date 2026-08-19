@@ -29,14 +29,12 @@ kucoin_futures = ccxt.kucoinfutures({'enableRateLimit': True})
 
 # --- DATA FETCHING WITH FALLBACK ---
 async def fetch_ohlcv(symbol, timeframe, limit=100):
-    # Try fetching from Bybit first
     try:
         data = await bybit_futures.fetch_ohlcv(symbol, timeframe, limit=limit)
         return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     except Exception as e:
         logging.warning(f"Bybit fetch failed for {symbol}, switching to KuCoin fallback: {e}")
         
-    # Fallback to KuCoin
     try:
         data = await kucoin_futures.fetch_ohlcv(symbol, timeframe, limit=limit)
         return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -77,10 +75,10 @@ async def analyze_market(symbol):
     df_4h = await fetch_ohlcv(symbol, '4h', limit=50)
     df_15m = await fetch_ohlcv(symbol, '15m', limit=100)
     
-    if df_4h is None or df_15m is None or len(df_15m) < 10:
-        return None
+    if df_4h is None or df_15m is None or len(df_15m) < 20:
+        return []
 
-    # Technical Indicators
+    # Indicators Calculations
     df_15m['EMA_50'] = ta.trend.ema_indicator(df_15m['close'], window=50)
     df_15m['EMA_200'] = ta.trend.ema_indicator(df_15m['close'], window=200)
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
@@ -94,18 +92,26 @@ async def analyze_market(symbol):
     close_price = last_closed['close']
     atr = last_closed['ATR']
 
+    # Support & Resistance Levels
+    recent_support = df_15m['low'].tail(20).min()
+    recent_resistance = df_15m['high'].tail(20).max()
+    at_support = abs(close_price - recent_support) / close_price < 0.005
+    at_resistance = abs(close_price - recent_resistance) / close_price < 0.005
+
     # Higher Timeframe Trend (4H)
     df_4h['EMA_50'] = ta.trend.ema_indicator(df_4h['close'], window=50)
     trend_4h = "BULLISH" if df_4h.iloc[-2]['close'] > df_4h.iloc[-2]['EMA_50'] else "BEARISH"
 
-    # SMC FVG Logic
+    # SMC Fair Value Gap (FVG) Logic
     fvg_bullish = df_15m.iloc[-2]['low'] > df_15m.iloc[-4]['high']
     fvg_bearish = df_15m.iloc[-2]['high'] < df_15m.iloc[-4]['low']
 
-    # Candlestick Confirmations
+    # Candlestick Pattern Confirmations
     bull_confirm, bear_confirm, patterns = check_candle_confirmations(df_15m)
 
-    # FUTURES SIGNALS
+    signals_to_send = []
+
+    # --- 1. FUTURES SIGNALS (LONG / SHORT) ---
     futures_signal = None
     f_reasons = []
 
@@ -113,13 +119,15 @@ async def analyze_market(symbol):
         if last_closed['MACD'] > last_closed['MACD_SIGNAL']:
             futures_signal = "LONG 🟢"
             f_reasons = ["4H Bullish Trend Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "15m EMA & MACD Alignment"]
-            if fvg_bullish: f_reasons.append("15m Fair Value Gap (FVG) Support")
+            if at_support: f_reasons.append("Key Support Zone Bounce")
+            if fvg_bullish: f_reasons.append("SMC Bullish Fair Value Gap (FVG)")
 
     elif trend_4h == "BEARISH" and last_closed['RSI'] > 35 and last_closed['EMA_50'] < last_closed['EMA_200'] and bear_confirm:
         if last_closed['MACD'] < last_closed['MACD_SIGNAL']:
             futures_signal = "SHORT 🔴"
             f_reasons = ["4H Bearish Trend Alignment", f"Candlestick Confirmation: {', '.join(patterns)}", "15m EMA & MACD Alignment"]
-            if fvg_bearish: f_reasons.append("15m Fair Value Gap (FVG) Resistance")
+            if at_resistance: f_reasons.append("Key Resistance Zone Rejection")
+            if fvg_bearish: f_reasons.append("SMC Bearish Fair Value Gap (FVG)")
 
     if futures_signal:
         key = f"{symbol}_FUTURES_{futures_signal}"
@@ -132,27 +140,31 @@ async def analyze_market(symbol):
                 sl = round(close_price + (atr * 1.5), 2)
                 tp1, tp2, tp3 = round(close_price - (atr * 1.5), 2), round(close_price - (atr * 3.0), 2), round(close_price - (atr * 4.5), 2)
 
-            return {
+            signals_to_send.append({
                 'type': 'FUTURES ⚡', 'symbol': symbol, 'direction': futures_signal,
-                'confidence': "93%", 'entry': f"{round(close_price, 2)}",
+                'confidence': "94%", 'entry': f"{round(close_price, 2)}",
                 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'sl': sl,
                 'leverage': "10x - 20x", 'reasons': f_reasons
-            }
+            })
 
-    # SPOT SIGNALS
-    if trend_4h == "BULLISH" and last_closed['RSI'] < 45 and bull_confirm and fvg_bullish:
+    # --- 2. SPOT SIGNALS (BUY / ACCUMULATE) ---
+    if trend_4h == "BULLISH" and last_closed['RSI'] < 45 and bull_confirm:
         key = f"{symbol}_SPOT_BUY"
         if key not in SENT_SIGNALS:
             SENT_SIGNALS[key] = True
-            return {
+            spot_reasons = [f"Candlestick Confirmation: {', '.join(patterns)}", "Oversold RSI Dip on Bullish Trend"]
+            if at_support: spot_reasons.append("Major Support Rejection Level")
+            if fvg_bullish: spot_reasons.append("SMC Spot Liquidity / FVG Gap")
+
+            signals_to_send.append({
                 'type': 'SPOT 🛒', 'symbol': symbol, 'direction': 'BUY / ACCUMULATE 🟢',
-                'confidence': "95%", 'entry': f"{round(close_price, 2)}",
+                'confidence': "96%", 'entry': f"{round(close_price, 2)}",
                 'tp1': round(close_price * 1.05, 2), 'tp2': round(close_price * 1.10, 2), 'tp3': round(close_price * 1.20, 2),
                 'sl': round(close_price * 0.93, 2), 'leverage': "NO LEVERAGE (Spot)",
-                'reasons': [f"Candlestick Confirmation: {', '.join(patterns)}", "Oversold RSI Dip on Bullish Trend", "Strong Spot FVG Support"]
-            }
+                'reasons': spot_reasons
+            })
 
-    return None
+    return signals_to_send
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -163,8 +175,8 @@ async def market_scanner(application):
     while True:
         try:
             for symbol in PAIRS:
-                signal_data = await analyze_market(symbol)
-                if signal_data:
+                signals = await analyze_market(symbol)
+                for signal_data in signals:
                     reasons_formatted = "\n".join([f"• {r}" for r in signal_data['reasons']])
                     message = (
                         f"🚨 **CRYPTO SIGNAL PRO+** 🚨\n\n"
