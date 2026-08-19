@@ -19,12 +19,12 @@ def home():
     return "Crypto Signal Pro+ Bot is Live!", 200
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = "8982651587:AAFdVu5qARVO6aXgvUwC6f2QL1TquDFSqqY"  # Insert your BotFather token here
+TELEGRAM_TOKEN = "8982651587:AAFdVu5qARVO6aXgvUwC6f2QL1TquDFSqqY"  # Sanya bot token din ka a nan
 PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
 SENT_SIGNALS = {}
 
-# Primary & Fallback Exchanges (GYARA: ccxt.gate maimakon ccxt.gateio)
-exchange_primary = ccxt.binanceusdm({'enableRateLimit': True})
+# Primary & Fallback Exchanges (Amfani da MEXC & Gate don gujewar IP restrictions)
+exchange_primary = ccxt.mexc({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 exchange_fallback = ccxt.gate({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 
 # --- DATA FETCHING WITH FALLBACK ENGINE ---
