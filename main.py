@@ -21,7 +21,8 @@ def home():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    # Using production WSGI server or simple non-blocking run
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
@@ -47,13 +48,14 @@ gate_exchange = ccxt.gate({'enableRateLimit': True})
 
 def send_telegram_message(message):
     """Function to send messages to Telegram"""
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_TOKEN":
         logging.error("Telegram token is not configured correctly.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        logging.info(f"Telegram response: {response.status_code}")
     except Exception as e:
         logging.error(f"Error sending Telegram message: {e}")
 
@@ -209,6 +211,7 @@ async def analyze_market(symbol):
 
 async def market_scanner():
     """Main Loop: Scan market every 10 minutes with Duplicate Signal Prevention"""
+    logging.info("Starting Market Scanner...")
     send_telegram_message("🤖 *Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...*")
 
     while True:
@@ -253,14 +256,11 @@ async def market_scanner():
             logging.error(f"Error in scanner loop: {e}")
             await asyncio.sleep(30)
 
-async def main():
-    # Run Flask Webserver
+if __name__ == '__main__':
+    # Run Flask Webserver in a separate daemon thread
     server_thread = Thread(target=run_flask)
     server_thread.daemon = True
     server_thread.start()
 
-    # Start market scanning loop
-    await market_scanner()
-
-if __name__ == '__main__':
-    asyncio.run(main())
+    # Run the async event loop directly
+    asyncio.run(market_scanner())
