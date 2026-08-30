@@ -12,7 +12,7 @@ import requests
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEBSERVER (DON RENDER PORT BINDING) ---
+# --- FLASK WEBSERVER (FOR RENDER PORT BINDING) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -39,16 +39,16 @@ SECONDARY_PAIRS = ['DOT/USDT', 'LTC/USDT', 'SHIB/USDT', 'ARBV/USDT', 'INJ/USDT']
 
 # Anti-Duplicate & Cooldown Tracker
 SENT_SIGNALS = {}
-COOLDOWN_SECONDS = 4 * 3600  # Awanni 4 na cooldown
+COOLDOWN_SECONDS = 4 * 3600  # 4 Hours Cooldown
 
 # --- DUAL EXCHANGES (MEXC & GATE.IO - CLOUD FRIENDLY) ---
 mexc_exchange = ccxt.mexc({'enableRateLimit': True})
-gate_exchange = ccxt.gateio({'enableRateLimit': True})
+gate_exchange = ccxt.gate({'enableRateLimit': True})
 
 def send_telegram_message(message):
-    """Gidan aikawa da sakonni zuwa Telegram"""
+    """Function to send messages to Telegram"""
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
-        logging.error("Telegram token ba a saita shi da kyau ba.")
+        logging.error("Telegram token is not configured correctly.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
@@ -58,15 +58,13 @@ def send_telegram_message(message):
         logging.error(f"Error sending Telegram message: {e}")
 
 async def fetch_ohlcv(symbol, timeframe, limit=100):
-    """Ciro Candlestick Data daga Exchange (MEXC 1st, Backup ➔ Gate.io)"""
-    # Gudanar da bincike ta amfani da MEXC da farko
+    """Fetch Candlestick Data from Exchange (Primary: MEXC, Fallback: Gate.io)"""
     try:
         data = await mexc_exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         return df
     except Exception as e_mexc:
         logging.warning(f"MEXC failed for {symbol} ({timeframe}), switching to Gate.io: {e_mexc}")
-        # Idan MEXC ya samu tsaiko, a koma Gate.io
         try:
             data = await gate_exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -76,7 +74,7 @@ async def fetch_ohlcv(symbol, timeframe, limit=100):
             return None
 
 async def check_order_book_depth(symbol):
-    """Duba Buy/Sell Wall a kasuwa domin Order Book Depth Analysis"""
+    """Check Buy/Sell Walls for Order Book Depth Analysis"""
     try:
         order_book = await mexc_exchange.fetch_order_book(symbol, limit=20)
         bids_volume = sum([bid[1] for bid in order_book['bids']])
@@ -93,7 +91,7 @@ async def check_order_book_depth(symbol):
             return 0, 0
 
 async def analyze_market(symbol):
-    """Multi-Timeframe Engine (4H, 1H, 15m, 5m)"""
+    """Multi-Timeframe Analysis Engine (4H, 1H, 15m, 5m)"""
     df_4h = await fetch_ohlcv(symbol, '4h', limit=100)
     df_1h = await fetch_ohlcv(symbol, '1h', limit=100)
     df_15m = await fetch_ohlcv(symbol, '15m', limit=100)
@@ -111,7 +109,7 @@ async def analyze_market(symbol):
     close_1h = df_1h.iloc[-1]['close']
     ema_50_1h = df_1h.iloc[-1]['EMA_50']
 
-    # Entry Indicators (15m da 5m)
+    # Entry Indicators (15m & 5m)
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
     df_15m['ATR'] = ta.volatility.average_true_range(df_15m['high'], df_15m['low'], df_15m['close'], window=14)
     df_15m['Vol_MA'] = df_15m['volume'].rolling(window=20).mean()
@@ -181,7 +179,7 @@ async def analyze_market(symbol):
             confidence_score += 10
             reasons.append("High Volume Spike Confirmation")
 
-    # Mafi ƙarancin maki na tura signal shine 75%
+    # Minimum threshold to send signal is 75%
     if confidence_score >= 75 and direction:
         # Dynamic ATR Stop Loss & Take Profit Targets
         if "LONG" in direction:
@@ -210,7 +208,7 @@ async def analyze_market(symbol):
     return None
 
 async def market_scanner():
-    """Main Loop: Scan kowane minti 10 da rigakafin Duplicate Signals"""
+    """Main Loop: Scan market every 10 minutes with Duplicate Signal Prevention"""
     send_telegram_message("🤖 *Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...*")
 
     while True:
@@ -246,9 +244,9 @@ async def market_scanner():
                         )
                         send_telegram_message(msg)
 
-                await asyncio.sleep(2)  # Delay don guje wa API Limit
+                await asyncio.sleep(2)  # Delay to respect API rate limits
 
-            # Mintuna 10 tazarar barci kafin sake scanner (600 seconds)
+            # 10-minute sleep interval before the next scan cycle (600 seconds)
             await asyncio.sleep(600)
 
         except Exception as e:
@@ -256,12 +254,12 @@ async def market_scanner():
             await asyncio.sleep(30)
 
 async def main():
-    # Gudanar da Flask Webserver
+    # Run Flask Webserver
     server_thread = Thread(target=run_flask)
     server_thread.daemon = True
     server_thread.start()
 
-    # Fara gudanar da scanner loop
+    # Start market scanning loop
     await market_scanner()
 
 if __name__ == '__main__':
