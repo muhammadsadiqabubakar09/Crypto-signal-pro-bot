@@ -21,7 +21,6 @@ def home():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    # Using production WSGI server or simple non-blocking run
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # --- CONFIGURATION ---
@@ -47,15 +46,17 @@ mexc_exchange = ccxt.mexc({'enableRateLimit': True})
 gate_exchange = ccxt.gate({'enableRateLimit': True})
 
 def send_telegram_message(message):
-    """Function to send messages to Telegram"""
+    """Function to send messages to Telegram safely without formatting errors"""
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_TOKEN":
         logging.error("Telegram token is not configured correctly.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         response = requests.post(url, json=payload, timeout=10)
         logging.info(f"Telegram response: {response.status_code}")
+        if response.status_code != 200:
+            logging.error(f"Telegram Error Detail: {response.text}")
     except Exception as e:
         logging.error(f"Error sending Telegram message: {e}")
 
@@ -135,11 +136,10 @@ async def analyze_market(symbol):
     # Scoring & Direction Calculation
     confidence_score = 0
     reasons = []
-    direction = None
+    signal_type = None
 
-    # --- BUY / LONG EVALUATION ---
+    # --- BUY / BULLISH EVALUATION ---
     if close_4h > ema_200_4h and close_1h > ema_50_1h:
-        direction = "LONG 🟢"
         confidence_score += 30
         reasons.append("HTF Trend Alignment (4H > EMA200 & 1H > EMA50)")
 
@@ -159,9 +159,14 @@ async def analyze_market(symbol):
             confidence_score += 10
             reasons.append("High Volume Spike Confirmation")
 
-    # --- SELL / SHORT EVALUATION ---
+        # Distinguish between SPOT BUY and FUTURE LONG based on momentum
+        if confidence_score >= 85:
+            signal_type = "FUTURE LONG 🚀"
+        elif confidence_score >= 75:
+            signal_type = "SPOT BUY 🛒"
+
+    # --- SELL / BEARISH EVALUATION ---
     elif close_4h < ema_200_4h and close_1h < ema_50_1h:
-        direction = "SHORT 🔴"
         confidence_score += 30
         reasons.append("HTF Trend Alignment (4H < EMA200 & 1H < EMA50)")
 
@@ -181,10 +186,13 @@ async def analyze_market(symbol):
             confidence_score += 10
             reasons.append("High Volume Spike Confirmation")
 
+        if confidence_score >= 75:
+            signal_type = "FUTURE SHORT 📉"
+
     # Minimum threshold to send signal is 75%
-    if confidence_score >= 75 and direction:
+    if confidence_score >= 75 and signal_type:
         # Dynamic ATR Stop Loss & Take Profit Targets
-        if "LONG" in direction:
+        if "BUY" in signal_type or "LONG" in signal_type:
             sl = round(close_price - (atr * 1.5), 4)
             risk = close_price - sl
             tp1 = round(close_price + (risk * 1.5), 4)
@@ -199,7 +207,7 @@ async def analyze_market(symbol):
 
         return {
             'symbol': symbol,
-            'direction': direction,
+            'signal_type': signal_type,
             'confidence': f"{confidence_score}%",
             'entry': round(close_price, 4),
             'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
@@ -212,7 +220,7 @@ async def analyze_market(symbol):
 async def market_scanner():
     """Main Loop: Scan market every 10 minutes with Duplicate Signal Prevention"""
     logging.info("Starting Market Scanner...")
-    send_telegram_message("🤖 *Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...*")
+    send_telegram_message("🤖 Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...")
 
     while True:
         try:
@@ -223,27 +231,29 @@ async def market_scanner():
                 signal_data = await analyze_market(symbol)
 
                 if signal_data:
-                    direction = signal_data['direction']
-                    signal_key = f"{symbol}_{direction}"
+                    signal_type = signal_data['signal_type']
+                    signal_key = f"{symbol}_{signal_type}"
 
                     # Anti-Duplicate Check
                     last_sent = SENT_SIGNALS.get(signal_key, 0)
                     if (current_time - last_sent) >= COOLDOWN_SECONDS:
                         SENT_SIGNALS[signal_key] = current_time
 
-                        reasons_text = "\n".join([f"• {r}" for r in signal_data['reasons']])
+                        reasons_text = "\n".join([f"- {r}" for r in signal_data['reasons']])
+                        leverage_text = "None (Spot Order)" if "SPOT" in signal_type else "5x - 10x"
+
                         msg = (
-                            f"🚨 **CRYPTO SIGNAL PRO** 🚨\n\n"
-                            f"🪙 **Coin:** {signal_data['symbol']}\n"
-                            f"🎯 **Direction:** {signal_data['direction']}\n"
-                            f"📊 **Confidence Score:** {signal_data['confidence']}\n\n"
-                            f"📥 **Entry Zone:** `{signal_data['entry']}`\n"
-                            f"🛑 **Stop Loss:** `{signal_data['sl']}`\n"
-                            f"🎯 **TP 1 (1:1.5 RR):** `{signal_data['tp1']}`\n"
-                            f"🎯 **TP 2 (1:3.0 RR):** `{signal_data['tp2']}`\n"
-                            f"🎯 **TP 3 (Structure Target):** `{signal_data['tp3']}`\n\n"
-                            f"⚖️ **Suggested Leverage:** 5x - 10x\n\n"
-                            f"💡 **Analytical Reasons:**\n{reasons_text}"
+                            f"🚨 CRYPTO SIGNAL PRO 🚨\n\n"
+                            f"🪙 Coin: {signal_data['symbol']}\n"
+                            f"🎯 Signal Type: {signal_data['signal_type']}\n"
+                            f"📊 Confidence Score: {signal_data['confidence']}\n\n"
+                            f"📥 Entry Zone: {signal_data['entry']}\n"
+                            f"🛑 Stop Loss: {signal_data['sl']}\n"
+                            f"🎯 TP 1 (1:1.5 RR): {signal_data['tp1']}\n"
+                            f"🎯 TP 2 (1:3.0 RR): {signal_data['tp2']}\n"
+                            f"🎯 TP 3 (Structure Target): {signal_data['tp3']}\n\n"
+                            f"⚖️ Suggested Leverage: {leverage_text}\n\n"
+                            f"💡 Analytical Reasons:\n{reasons_text}"
                         )
                         send_telegram_message(msg)
 
