@@ -25,7 +25,7 @@ def run_flask():
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR TELEGRAM_CHAD_ID")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
 # Primary High-Volume Coins (Top Priority)
 PRIMARY_PAIRS = [
@@ -41,8 +41,9 @@ SECONDARY_PAIRS = ['DOT/USDT', 'LTC/USDT', 'SHIB/USDT', 'ARBV/USDT', 'INJ/USDT']
 SENT_SIGNALS = {}
 COOLDOWN_SECONDS = 4 * 3600  # Awanni 4 na cooldown
 
-# CCXT Exchange Client (Bybit/Gate.io as Cloud-Friendly Provider)
-exchange = ccxt.bybit({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
+# --- DUAL EXCHANGES (MEXC & GATE.IO - CLOUD FRIENDLY) ---
+mexc_exchange = ccxt.mexc({'enableRateLimit': True})
+gate_exchange = ccxt.gateio({'enableRateLimit': True})
 
 def send_telegram_message(message):
     """Gidan aikawa da sakonni zuwa Telegram"""
@@ -57,25 +58,39 @@ def send_telegram_message(message):
         logging.error(f"Error sending Telegram message: {e}")
 
 async def fetch_ohlcv(symbol, timeframe, limit=100):
-    """Ciro Candlestick Data daga Exchange"""
+    """Ciro Candlestick Data daga Exchange (MEXC 1st, Backup ➔ Gate.io)"""
+    # Gudanar da bincike ta amfani da MEXC da farko
     try:
-        data = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        data = await mexc_exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         return df
-    except Exception as e:
-        logging.warning(f"Failed to fetch {timeframe} data for {symbol}: {e}")
-        return None
+    except Exception as e_mexc:
+        logging.warning(f"MEXC failed for {symbol} ({timeframe}), switching to Gate.io: {e_mexc}")
+        # Idan MEXC ya samu tsaiko, a koma Gate.io
+        try:
+            data = await gate_exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            return df
+        except Exception as e_gate:
+            logging.error(f"Gate.io also failed for {symbol} ({timeframe}): {e_gate}")
+            return None
 
 async def check_order_book_depth(symbol):
     """Duba Buy/Sell Wall a kasuwa domin Order Book Depth Analysis"""
     try:
-        order_book = await exchange.fetch_order_book(symbol, limit=20)
+        order_book = await mexc_exchange.fetch_order_book(symbol, limit=20)
         bids_volume = sum([bid[1] for bid in order_book['bids']])
         asks_volume = sum([ask[1] for ask in order_book['asks']])
         return bids_volume, asks_volume
-    except Exception as e:
-        logging.warning(f"Could not fetch order book for {symbol}: {e}")
-        return 0, 0
+    except Exception:
+        try:
+            order_book = await gate_exchange.fetch_order_book(symbol, limit=20)
+            bids_volume = sum([bid[1] for bid in order_book['bids']])
+            asks_volume = sum([ask[1] for ask in order_book['asks']])
+            return bids_volume, asks_volume
+        except Exception as e:
+            logging.warning(f"Could not fetch order book for {symbol}: {e}")
+            return 0, 0
 
 async def analyze_market(symbol):
     """Multi-Timeframe Engine (4H, 1H, 15m, 5m)"""
@@ -196,7 +211,7 @@ async def analyze_market(symbol):
 
 async def market_scanner():
     """Main Loop: Scan kowane minti 10 da rigakafin Duplicate Signals"""
-    send_telegram_message("🤖 *Crypto Signal Pro Bot Active! Scanning market every 10 minutes...*")
+    send_telegram_message("🤖 *Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...*")
 
     while True:
         try:
