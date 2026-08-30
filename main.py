@@ -24,8 +24,8 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8824977398:AAHV1mWBZxe4hp-6wS7ftGlu6--V9-OpWKA")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6761608539")
 
 # Primary High-Volume Coins (Top Priority)
 PRIMARY_PAIRS = [
