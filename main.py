@@ -9,10 +9,10 @@ import pandas as pd
 import ta
 import requests
 
-# Logging setup
+# Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEBSERVER (FOR RENDER PORT BINDING) ---
+# --- FLASK WEBSERVER FOR RENDER PORT BINDING ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -27,26 +27,18 @@ def run_flask():
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
-# Primary High-Volume Coins (Top Priority)
 PRIMARY_PAIRS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
     'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'SUI/USDT',
     'NEAR/USDT', 'PEPE/USDT', 'FET/USDT', 'APT/USDT', 'POL/USDT'
 ]
-
-# Secondary / Optional Coins
 SECONDARY_PAIRS = ['DOT/USDT', 'LTC/USDT', 'SHIB/USDT', 'ARB/USDT', 'INJ/USDT']
 
-# Anti-Duplicate & Cooldown Tracker
 SENT_SIGNALS = {}
 COOLDOWN_SECONDS = 4 * 3600  # 4 Hours Cooldown
 
-# --- DUAL EXCHANGES (MEXC & GATE.IO - CLOUD FRIENDLY) ---
-mexc_exchange = ccxt.mexc({'enableRateLimit': True})
-gate_exchange = ccxt.gate({'enableRateLimit': True})
-
 def send_telegram_message(message):
-    """Function to send messages to Telegram safely without formatting errors"""
+    """Safely send messages to Telegram"""
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_TOKEN":
         logging.error("Telegram token is not configured correctly.")
         return
@@ -54,91 +46,71 @@ def send_telegram_message(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         response = requests.post(url, json=payload, timeout=10)
-        logging.info(f"Telegram response: {response.status_code}")
-        if response.status_code != 200:
-            logging.error(f"Telegram Error Detail: {response.text}")
+        print(f"[TELEGRAM] Response Status: {response.status_code}", flush=True)
     except Exception as e:
-        logging.error(f"Error sending Telegram message: {e}")
+        print(f"[TELEGRAM ERROR] {e}", flush=True)
 
-async def fetch_ohlcv(symbol, timeframe, limit=100):
-    """Fetch Candlestick Data from Exchange (Primary: MEXC, Fallback: Gate.io)"""
+async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=100):
+    """Fetch Candlestick Data safely with exchange reconnection"""
     try:
-        data = await mexc_exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        return df
+        data = await mexc.fetch_ohlcv(symbol, timeframe, limit=limit)
+        return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     except Exception as e_mexc:
-        logging.warning(f"MEXC failed for {symbol} ({timeframe}), switching to Gate.io: {e_mexc}")
         try:
-            data = await gate_exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            return df
-        except Exception as e_gate:
-            logging.error(f"Gate.io also failed for {symbol} ({timeframe}): {e_gate}")
+            data = await gate.fetch_ohlcv(symbol, timeframe, limit=limit)
+            return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        except Exception:
             return None
 
-async def check_order_book_depth(symbol):
-    """Check Buy/Sell Walls for Order Book Depth Analysis"""
+async def check_order_book_depth(mexc, gate, symbol):
+    """Check Order Book Depth"""
     try:
-        order_book = await mexc_exchange.fetch_order_book(symbol, limit=20)
-        bids_volume = sum([bid[1] for bid in order_book['bids']])
-        asks_volume = sum([ask[1] for ask in order_book['asks']])
-        return bids_volume, asks_volume
+        order_book = await mexc.fetch_order_book(symbol, limit=20)
+        return sum([b[1] for b in order_book['bids']]), sum([a[1] for a in order_book['asks']])
     except Exception:
         try:
-            order_book = await gate_exchange.fetch_order_book(symbol, limit=20)
-            bids_volume = sum([bid[1] for bid in order_book['bids']])
-            asks_volume = sum([ask[1] for ask in order_book['asks']])
-            return bids_volume, asks_volume
-        except Exception as e:
-            logging.warning(f"Could not fetch order book for {symbol}: {e}")
+            order_book = await gate.fetch_order_book(symbol, limit=20)
+            return sum([b[1] for b in order_book['bids']]), sum([a[1] for a in order_book['asks']])
+        except Exception:
             return 0, 0
 
-async def analyze_market(symbol):
-    """Multi-Timeframe Analysis Engine (4H, 1H, 15m, 5m)"""
-    df_4h = await fetch_ohlcv(symbol, '4h', limit=100)
-    df_1h = await fetch_ohlcv(symbol, '1h', limit=100)
-    df_15m = await fetch_ohlcv(symbol, '15m', limit=100)
-    df_5m = await fetch_ohlcv(symbol, '5m', limit=100)
+async def analyze_market(mexc, gate, symbol):
+    """Multi-Timeframe Analysis Engine"""
+    df_4h = await fetch_ohlcv(mexc, gate, symbol, '4h', limit=100)
+    df_1h = await fetch_ohlcv(mexc, gate, symbol, '1h', limit=100)
+    df_15m = await fetch_ohlcv(mexc, gate, symbol, '15m', limit=100)
+    df_5m = await fetch_ohlcv(mexc, gate, symbol, '5m', limit=100)
 
     if df_4h is None or df_1h is None or df_15m is None or df_5m is None:
         return None
 
-    # Trend Indicators (4H & 1H)
     df_4h['EMA_200'] = ta.trend.ema_indicator(df_4h['close'], window=200)
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
 
-    close_4h = df_4h.iloc[-1]['close']
-    ema_200_4h = df_4h.iloc[-1]['EMA_200']
-    close_1h = df_1h.iloc[-1]['close']
-    ema_50_1h = df_1h.iloc[-1]['EMA_50']
+    close_4h, ema_200_4h = df_4h.iloc[-1]['close'], df_4h.iloc[-1]['EMA_200']
+    close_1h, ema_50_1h = df_1h.iloc[-1]['close'], df_1h.iloc[-1]['EMA_50']
 
-    # Entry Indicators (15m & 5m)
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
     df_15m['ATR'] = ta.volatility.average_true_range(df_15m['high'], df_15m['low'], df_15m['close'], window=14)
     df_15m['Vol_MA'] = df_15m['volume'].rolling(window=20).mean()
-
     df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], window=14)
 
     last_15m = df_15m.iloc[-1]
     last_5m = df_5m.iloc[-1]
-    close_price = last_15m['close']
-    atr = last_15m['ATR']
+    close_price, atr = last_15m['close'], last_15m['ATR']
 
-    # Key Support and Resistance Zones (SMC Core)
     recent_support = df_15m['low'].tail(20).min()
     recent_resistance = df_15m['high'].tail(20).max()
     at_support = (close_price - recent_support) / close_price < 0.006
     at_resistance = (recent_resistance - close_price) / close_price < 0.006
 
-    # Fetch Order Book Depth
-    bids_vol, asks_vol = await check_order_book_depth(symbol)
+    bids_vol, asks_vol = await check_order_book_depth(mexc, gate, symbol)
 
-    # Scoring & Direction Calculation
     confidence_score = 0
     reasons = []
     signal_type = None
 
-    # --- BUY / BULLISH EVALUATION ---
+    # BUY / LONG
     if close_4h > ema_200_4h and close_1h > ema_50_1h:
         confidence_score += 30
         reasons.append("HTF Trend Alignment (4H > EMA200 & 1H > EMA50)")
@@ -153,19 +125,18 @@ async def analyze_market(symbol):
 
         if last_15m['RSI'] < 48 and last_5m['RSI'] < 45:
             confidence_score += 15
-            reasons.append("LTF RSI Oversold Recovery (15m/5m Confirmation)")
+            reasons.append("LTF RSI Oversold Recovery")
 
         if last_15m['volume'] > last_15m['Vol_MA'] * 1.1:
             confidence_score += 10
             reasons.append("High Volume Spike Confirmation")
 
-        # Distinguish between SPOT BUY and FUTURE LONG based on momentum
         if confidence_score >= 85:
             signal_type = "FUTURE LONG 🚀"
         elif confidence_score >= 75:
             signal_type = "SPOT BUY 🛒"
 
-    # --- SELL / BEARISH EVALUATION ---
+    # SELL / SHORT
     elif close_4h < ema_200_4h and close_1h < ema_50_1h:
         confidence_score += 30
         reasons.append("HTF Trend Alignment (4H < EMA200 & 1H < EMA50)")
@@ -180,7 +151,7 @@ async def analyze_market(symbol):
 
         if last_15m['RSI'] > 52 and last_5m['RSI'] > 55:
             confidence_score += 15
-            reasons.append("LTF RSI Overbought Rejection (15m/5m Confirmation)")
+            reasons.append("LTF RSI Overbought Rejection")
 
         if last_15m['volume'] > last_15m['Vol_MA'] * 1.1:
             confidence_score += 10
@@ -189,21 +160,15 @@ async def analyze_market(symbol):
         if confidence_score >= 75:
             signal_type = "FUTURE SHORT 📉"
 
-    # Minimum threshold to send signal is 75%
     if confidence_score >= 75 and signal_type:
-        # Dynamic ATR Stop Loss & Take Profit Targets
         if "BUY" in signal_type or "LONG" in signal_type:
             sl = round(close_price - (atr * 1.5), 4)
             risk = close_price - sl
-            tp1 = round(close_price + (risk * 1.5), 4)
-            tp2 = round(close_price + (risk * 3.0), 4)
-            tp3 = round(recent_resistance, 4)
+            tp1, tp2, tp3 = round(close_price + (risk * 1.5), 4), round(close_price + (risk * 3.0), 4), round(recent_resistance, 4)
         else:
             sl = round(close_price + (atr * 1.5), 4)
             risk = sl - close_price
-            tp1 = round(close_price - (risk * 1.5), 4)
-            tp2 = round(close_price - (risk * 3.0), 4)
-            tp3 = round(recent_support, 4)
+            tp1, tp2, tp3 = round(close_price - (risk * 1.5), 4), round(close_price - (risk * 3.0), 4), round(recent_support, 4)
 
         return {
             'symbol': symbol,
@@ -218,23 +183,27 @@ async def analyze_market(symbol):
     return None
 
 async def market_scanner():
-    """Main Loop: Scan market every 10 minutes with Duplicate Signal Prevention"""
-    logging.info("Starting Market Scanner...")
+    """Main Scanner Loop with Safe Async Exchange Management"""
+    print("=== STARTING MARKET SCANNER LOOP ===", flush=True)
     send_telegram_message("🤖 Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...")
 
-    while True:
-        try:
+    # Dynamic exchange instantiation inside loop
+    mexc = ccxt.mexc({'enableRateLimit': True})
+    gate = ccxt.gate({'enableRateLimit': True})
+
+    try:
+        while True:
             current_time = time.time()
             all_pairs = PRIMARY_PAIRS + SECONDARY_PAIRS
+            print(f"[SCANNER] Starting new scan cycle at {time.strftime('%H:%M:%S')}", flush=True)
 
             for symbol in all_pairs:
-                signal_data = await analyze_market(symbol)
+                signal_data = await analyze_market(mexc, gate, symbol)
 
                 if signal_data:
                     signal_type = signal_data['signal_type']
                     signal_key = f"{symbol}_{signal_type}"
 
-                    # Anti-Duplicate Check
                     last_sent = SENT_SIGNALS.get(signal_key, 0)
                     if (current_time - last_sent) >= COOLDOWN_SECONDS:
                         SENT_SIGNALS[signal_key] = current_time
@@ -257,20 +226,27 @@ async def market_scanner():
                         )
                         send_telegram_message(msg)
 
-                await asyncio.sleep(2)  # Delay to respect API rate limits
+                await asyncio.sleep(2)
 
-            # 10-minute sleep interval before the next scan cycle (600 seconds)
+            print("[SCANNER] Scan cycle finished. Sleeping for 10 minutes...", flush=True)
             await asyncio.sleep(600)
 
+    finally:
+        await mexc.close()
+        await gate.close()
+
+def main_loop():
+    """Auto-restart Async Loop if network drops"""
+    while True:
+        try:
+            asyncio.run(market_scanner())
         except Exception as e:
-            logging.error(f"Error in scanner loop: {e}")
-            await asyncio.sleep(30)
+            print(f"[CRITICAL ERROR] Scanner crashed: {e}. Restarting in 10 seconds...", flush=True)
+            time.sleep(10)
 
 if __name__ == '__main__':
-    # Run Flask Webserver in a separate daemon thread
     server_thread = Thread(target=run_flask)
     server_thread.daemon = True
     server_thread.start()
 
-    # Run the async event loop directly
-    asyncio.run(market_scanner())
+    main_loop()
