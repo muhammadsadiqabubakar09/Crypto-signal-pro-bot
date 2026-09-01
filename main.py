@@ -27,15 +27,22 @@ def run_flask():
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
 
-PRIMARY_PAIRS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-    'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'SUI/USDT',
-    'NEAR/USDT', 'PEPE/USDT', 'FET/USDT', 'APT/USDT', 'POL/USDT'
+# EXTENDED TOP COINS LIST (80+ HIGH VOLUME ALTCOINS)
+TOP_COINS = [
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
+    'LINK/USDT', 'SUI/USDT', 'NEAR/USDT', 'PEPE/USDT', 'FET/USDT', 'APT/USDT', 'POL/USDT', 'DOT/USDT',
+    'LTC/USDT', 'SHIB/USDT', 'ARB/USDT', 'INJ/USDT', 'TIA/USDT', 'OP/USDT', 'RENDER/USDT', 'WIF/USDT',
+    'FLOKI/USDT', 'BONK/USDT', 'SEI/USDT', 'STX/USDT', 'GALA/USDT', 'RUNE/USDT', 'AAVE/USDT', 'ICP/USDT',
+    'FIL/USDT', 'ATOM/USDT', 'ETC/USDT', 'XLM/USDT', 'UNI/USDT', 'BCH/USDT', 'LDO/USDT', 'KAS/USDT',
+    'FET/USDT', 'JUP/USDT', 'ORDI/USDT', 'MEME/USDT', 'NOT/USDT', 'WLD/USDT', 'ONDO/USDT', 'PENGU/USDT',
+    'ENA/USDT', 'STRK/USDT', 'AEVO/USDT', 'PYTH/USDT', 'DYDX/USDT', 'SAND/USDT', 'MANA/USDT', 'AXS/USDT',
+    'CRV/USDT', 'MKR/USDT', 'SNX/USDT', 'COMP/USDT', '1INCH/USDT', 'ENS/USDT', 'AGIX/USDT', 'OCEAN/USDT',
+    'PENDLE/USDT', 'BLUR/USDT', 'ALT/USDT', 'ARKM/USDT', 'WOO/USDT', 'MANTA/USDT', 'PIXEL/USDT', 'PORTAL/USDT',
+    'SFP/USDT', 'CHR/USDT', 'GAS/USDT', 'ARK/USDT', 'NEO/USDT', 'QTUM/USDT', 'IOTA/USDT', 'TRX/USDT'
 ]
-SECONDARY_PAIRS = ['DOT/USDT', 'LTC/USDT', 'SHIB/USDT', 'ARB/USDT', 'INJ/USDT']
 
 SENT_SIGNALS = {}
-COOLDOWN_SECONDS = 4 * 3600  # 4 Hours Cooldown
+COOLDOWN_SECONDS = 3 * 3600  # 3 Hours Cooldown per signal
 
 def send_telegram_message(message):
     """Safely send messages to Telegram"""
@@ -55,7 +62,7 @@ async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=100):
     try:
         data = await mexc.fetch_ohlcv(symbol, timeframe, limit=limit)
         return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    except Exception as e_mexc:
+    except Exception:
         try:
             data = await gate.fetch_ohlcv(symbol, timeframe, limit=limit)
             return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -75,7 +82,7 @@ async def check_order_book_depth(mexc, gate, symbol):
             return 0, 0
 
 async def analyze_market(mexc, gate, symbol):
-    """Multi-Timeframe Analysis Engine"""
+    """Multi-Timeframe Analysis Engine (4H, 1H, 15M, 5M)"""
     df_4h = await fetch_ohlcv(mexc, gate, symbol, '4h', limit=100)
     df_1h = await fetch_ohlcv(mexc, gate, symbol, '1h', limit=100)
     df_15m = await fetch_ohlcv(mexc, gate, symbol, '15m', limit=100)
@@ -84,12 +91,14 @@ async def analyze_market(mexc, gate, symbol):
     if df_4h is None or df_1h is None or df_15m is None or df_5m is None:
         return None
 
+    # Trend Indicators
     df_4h['EMA_200'] = ta.trend.ema_indicator(df_4h['close'], window=200)
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
 
     close_4h, ema_200_4h = df_4h.iloc[-1]['close'], df_4h.iloc[-1]['EMA_200']
     close_1h, ema_50_1h = df_1h.iloc[-1]['close'], df_1h.iloc[-1]['EMA_50']
 
+    # Entry & Trigger Indicators (15m and 5m)
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
     df_15m['ATR'] = ta.volatility.average_true_range(df_15m['high'], df_15m['low'], df_15m['close'], window=14)
     df_15m['Vol_MA'] = df_15m['volume'].rolling(window=20).mean()
@@ -101,8 +110,8 @@ async def analyze_market(mexc, gate, symbol):
 
     recent_support = df_15m['low'].tail(20).min()
     recent_resistance = df_15m['high'].tail(20).max()
-    at_support = (close_price - recent_support) / close_price < 0.006
-    at_resistance = (recent_resistance - close_price) / close_price < 0.006
+    at_support = (close_price - recent_support) / close_price < 0.008
+    at_resistance = (recent_resistance - close_price) / close_price < 0.008
 
     bids_vol, asks_vol = await check_order_book_depth(mexc, gate, symbol)
 
@@ -110,57 +119,59 @@ async def analyze_market(mexc, gate, symbol):
     reasons = []
     signal_type = None
 
-    # BUY / LONG
+    # BUY / LONG SCENARIO
     if close_4h > ema_200_4h and close_1h > ema_50_1h:
-        confidence_score += 30
-        reasons.append("HTF Trend Alignment (4H > EMA200 & 1H > EMA50)")
+        confidence_score += 25
+        reasons.append("HTF Bullish Trend (4H > EMA200 & 1H > EMA50)")
 
         if at_support:
             confidence_score += 25
-            reasons.append("Price Rejection at Key Support Zone (Order Block)")
+            reasons.append("SMC Support Zone / Order Block Test (15m)")
 
-        if bids_vol > asks_vol * 1.2:
+        if bids_vol > asks_vol:
             confidence_score += 20
-            reasons.append("Order Book Depth: Strong Buy Wall Detected")
+            reasons.append("Order Book: Buying Pressure High")
 
-        if last_15m['RSI'] < 48 and last_5m['RSI'] < 45:
+        # 15m & 5m Entry Triggers
+        if last_15m['RSI'] < 50 or last_5m['RSI'] < 45:
             confidence_score += 15
-            reasons.append("LTF RSI Oversold Recovery")
+            reasons.append("LTF RSI Entry Trigger (15m/5m Dip)")
 
-        if last_15m['volume'] > last_15m['Vol_MA'] * 1.1:
-            confidence_score += 10
-            reasons.append("High Volume Spike Confirmation")
+        if last_15m['volume'] > last_15m['Vol_MA']:
+            confidence_score += 15
+            reasons.append("Volume Spiking Above Average")
 
-        if confidence_score >= 85:
+        if confidence_score >= 75:
             signal_type = "FUTURE LONG 🚀"
-        elif confidence_score >= 75:
+        elif confidence_score >= 65:
             signal_type = "SPOT BUY 🛒"
 
-    # SELL / SHORT
+    # SELL / SHORT SCENARIO
     elif close_4h < ema_200_4h and close_1h < ema_50_1h:
-        confidence_score += 30
-        reasons.append("HTF Trend Alignment (4H < EMA200 & 1H < EMA50)")
+        confidence_score += 25
+        reasons.append("HTF Bearish Trend (4H < EMA200 & 1H < EMA50)")
 
         if at_resistance:
             confidence_score += 25
-            reasons.append("Price Rejection at Key Resistance Zone")
+            reasons.append("SMC Resistance Zone Rejection (15m)")
 
-        if asks_vol > bids_vol * 1.2:
+        if asks_vol > bids_vol:
             confidence_score += 20
-            reasons.append("Order Book Depth: Strong Sell Wall Detected")
+            reasons.append("Order Book: Selling Pressure High")
 
-        if last_15m['RSI'] > 52 and last_5m['RSI'] > 55:
+        # 15m & 5m Entry Triggers
+        if last_15m['RSI'] > 50 or last_5m['RSI'] > 55:
             confidence_score += 15
-            reasons.append("LTF RSI Overbought Rejection")
+            reasons.append("LTF RSI Entry Trigger (15m/5m Peak)")
 
-        if last_15m['volume'] > last_15m['Vol_MA'] * 1.1:
-            confidence_score += 10
-            reasons.append("High Volume Spike Confirmation")
+        if last_15m['volume'] > last_15m['Vol_MA']:
+            confidence_score += 15
+            reasons.append("Volume Spiking Above Average")
 
-        if confidence_score >= 75:
+        if confidence_score >= 65:
             signal_type = "FUTURE SHORT 📉"
 
-    if confidence_score >= 75 and signal_type:
+    if confidence_score >= 65 and signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
             sl = round(close_price - (atr * 1.5), 4)
             risk = close_price - sl
@@ -183,21 +194,19 @@ async def analyze_market(mexc, gate, symbol):
     return None
 
 async def market_scanner():
-    """Main Scanner Loop with Safe Async Exchange Management"""
-    print("=== STARTING MARKET SCANNER LOOP ===", flush=True)
-    send_telegram_message("🤖 Crypto Signal Pro Bot Active! Scanning market via Dual Exchanges (MEXC/Gate.io)...")
+    """Main Scanner Loop Scanning Top 80+ Coins"""
+    print("=== STARTING MARKET SCANNER LOOP (80+ COINS) ===", flush=True)
+    send_telegram_message("🤖 Crypto Signal Pro Bot Active! Scanning Top 80+ Crypto Pairs...")
 
-    # Dynamic exchange instantiation inside loop
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
 
     try:
         while True:
             current_time = time.time()
-            all_pairs = PRIMARY_PAIRS + SECONDARY_PAIRS
-            print(f"[SCANNER] Starting new scan cycle at {time.strftime('%H:%M:%S')}", flush=True)
+            print(f"[SCANNER] Starting new scan cycle for {len(TOP_COINS)} pairs at {time.strftime('%H:%M:%S')}", flush=True)
 
-            for symbol in all_pairs:
+            for symbol in TOP_COINS:
                 signal_data = await analyze_market(mexc, gate, symbol)
 
                 if signal_data:
@@ -226,17 +235,17 @@ async def market_scanner():
                         )
                         send_telegram_message(msg)
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(0.5)
 
-            print("[SCANNER] Scan cycle finished. Sleeping for 10 minutes...", flush=True)
-            await asyncio.sleep(600)
+            print("[SCANNER] Scan cycle finished for 80+ coins. Sleeping for 5 minutes...", flush=True)
+            await asyncio.sleep(300)
 
     finally:
         await mexc.close()
         await gate.close()
 
 def main_loop():
-    """Auto-restart Async Loop if network drops"""
+    """Auto-restart Async Loop"""
     while True:
         try:
             asyncio.run(market_scanner())
