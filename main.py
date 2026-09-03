@@ -341,7 +341,7 @@ async def analyze_market(mexc, gate, symbol):
     return None
 
 async def market_scanner():
-    """Fast Continuous Scanner Loop"""
+    """Fast Continuous Scanner Loop with Detailed Render Logs"""
     print("=== STARTING PRECISION SMC SIGNAL SCANNER ===", flush=True)
     send_telegram_message("🎯 Precision Crypto Signal Bot (Deep SMC + Patterns + Indicators) Active!")
 
@@ -353,7 +353,8 @@ async def market_scanner():
             current_time = time.time()
             print(f"[SCANNER] Cycle started at {time.strftime('%H:%M:%S')}", flush=True)
 
-            for symbol in TOP_COINS:
+            for index, symbol in enumerate(TOP_COINS, start=1):
+                print(f"[SCANNER] ({index}/{len(TOP_COINS)}) Scanning {symbol}...", flush=True)
                 signal_data = await analyze_market(mexc, gate, symbol)
 
                 if signal_data:
