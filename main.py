@@ -174,7 +174,7 @@ async def analyze_market(mexc, gate, symbol):
     df_5m = await fetch_ohlcv(mexc, gate, symbol, '5m', limit=100)
 
     if df_4h is None or df_1h is None or df_15m is None or df_5m is None:
-        return None
+        return None, 0
 
     # Trend Indicators
     df_4h['EMA_200'] = ta.trend.ema_indicator(df_4h['close'], window=200)
@@ -336,9 +336,9 @@ async def analyze_market(mexc, gate, symbol):
             'tp3': format_price(tp3),
             'sl': format_price(sl),
             'reasons': reasons
-        }
+        }, confidence_score
 
-    return None
+    return None, confidence_score
 
 async def market_scanner():
     """Fast Continuous Scanner Loop with Detailed Render Logs"""
@@ -354,8 +354,8 @@ async def market_scanner():
             print(f"[SCANNER] Cycle started at {time.strftime('%H:%M:%S')}", flush=True)
 
             for index, symbol in enumerate(TOP_COINS, start=1):
-                print(f"[SCANNER] ({index}/{len(TOP_COINS)}) Scanning {symbol}...", flush=True)
-                signal_data = await analyze_market(mexc, gate, symbol)
+                signal_data, current_score = await analyze_market(mexc, gate, symbol)
+                print(f"[SCANNER] ({index}/{len(TOP_COINS)}) {symbol} Score: {current_score}%", flush=True)
 
                 if signal_data:
                     signal_type = signal_data['signal_type']
