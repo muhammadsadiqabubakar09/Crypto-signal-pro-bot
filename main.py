@@ -17,7 +17,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Precision SMC Engine with Closed Candlestick Confirmation is Active!", 200
+    return "Institutional SMC, Chart Patterns & Indicators Signal Engine Active!", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -53,8 +53,21 @@ def send_telegram_message(message):
         print(f"[TELEGRAM ERROR] {e}", flush=True)
         return False
 
-async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=100):
-    """Fetch Candlestick Data safely"""
+def format_price(price):
+    """Dynamic Precision Formatter for Small and Large Prices"""
+    if price is None or price == 0:
+        return "0.0"
+    if price < 0.0001:
+        return f"{price:.8f}"
+    elif price < 0.01:
+        return f"{price:.6f}"
+    elif price < 1.0:
+        return f"{price:.4f}"
+    else:
+        return f"{price:.2f}"
+
+async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=300):
+    """Fetch Deep Candlestick Data safely (Limit=300 for Strong S/R)"""
     try:
         data = await mexc.fetch_ohlcv(symbol, timeframe, limit=limit)
         if data and len(data) > 0:
@@ -83,10 +96,38 @@ async def check_order_book_depth(mexc, gate, symbol):
         except Exception:
             return 0, 0
 
+def detect_chart_patterns(df):
+    """Detect Double Bottom (W) and Double Top (M) Patterns using Closed Candles"""
+    recent_lows = df['low'].iloc[:-1].tail(30).values
+    recent_highs = df['high'].iloc[:-1].tail(30).values
+    current_close = df.iloc[-2]['close']
+
+    double_bottom = False
+    double_top = False
+
+    if len(recent_lows) >= 30:
+        min_low_1 = min(recent_lows[:15])
+        min_low_2 = min(recent_lows[15:])
+        
+        # Check if two lows are within 0.35% range
+        if abs(min_low_1 - min_low_2) / current_close < 0.0035:
+            if current_close > min_low_2:
+                double_bottom = True
+
+    if len(recent_highs) >= 30:
+        max_high_1 = max(recent_highs[:15])
+        max_high_2 = max(recent_highs[15:])
+        
+        # Check if two highs are within 0.35% range
+        if abs(max_high_1 - max_high_2) / current_close < 0.0035:
+            if current_close < max_high_2:
+                double_top = True
+
+    return double_bottom, double_top
+
 def detect_candlestick_patterns(df):
     """CLOSED CANDLESTICK ONLY Recognition Engine"""
-    # Using CLOSED CANDLES: c0 = last closed candle (-2), c1 = (-3), c2 = (-4)
-    c0 = df.iloc[-2]  
+    c0 = df.iloc[-2]  # Closed Candle
     c1 = df.iloc[-3]  
     c2 = df.iloc[-4]  
 
@@ -99,7 +140,6 @@ def detect_candlestick_patterns(df):
     bullish_pattern = None
     bearish_pattern = None
 
-    # --- BULLISH REVERSALS ---
     if is_green(c0) and is_red(c1) and c0['close'] > c1['open'] and c0['open'] < c1['close']:
         bullish_pattern = "Bullish Engulfing"
     elif lower_wick(c0) > (2 * body(c0)) and upper_wick(c0) <= (0.3 * body(c0)):
@@ -115,7 +155,6 @@ def detect_candlestick_patterns(df):
     elif is_green(c2) and is_green(c1) and is_green(c0) and c0['close'] > c1['close'] > c2['close']:
         bullish_pattern = "Three White Soldiers"
 
-    # --- BEARISH REVERSALS ---
     if is_red(c0) and is_green(c1) and c0['close'] < c1['open'] and c0['open'] > c1['close']:
         bearish_pattern = "Bearish Engulfing"
     elif abs(c0['high'] - c1['high']) / c0['close'] < 0.0015 and is_green(c1) and is_red(c0):
@@ -128,11 +167,11 @@ def detect_candlestick_patterns(df):
     return bullish_pattern, bearish_pattern
 
 async def analyze_market(mexc, gate, symbol):
-    """Market Analysis Engine using Closed Candle Data"""
-    df_4h = await fetch_ohlcv(mexc, gate, symbol, '4h', limit=50)
-    df_1h = await fetch_ohlcv(mexc, gate, symbol, '1h', limit=50)
-    df_15m = await fetch_ohlcv(mexc, gate, symbol, '15m', limit=50)
-    df_5m = await fetch_ohlcv(mexc, gate, symbol, '5m', limit=50)
+    """Deep SMC + Chart Patterns + Indicator Analysis Engine"""
+    df_4h = await fetch_ohlcv(mexc, gate, symbol, '4h', limit=300)
+    df_1h = await fetch_ohlcv(mexc, gate, symbol, '1h', limit=300)
+    df_15m = await fetch_ohlcv(mexc, gate, symbol, '15m', limit=150)
+    df_5m = await fetch_ohlcv(mexc, gate, symbol, '5m', limit=100)
 
     if df_4h is None or df_1h is None or df_15m is None or df_5m is None:
         return None
@@ -141,31 +180,44 @@ async def analyze_market(mexc, gate, symbol):
     df_4h['EMA_200'] = ta.trend.ema_indicator(df_4h['close'], window=200)
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
 
-    close_4h = df_4h.iloc[-2]['close']  # Closed Candle
-    ema_200_4h = df_4h.iloc[-2]['EMA_200'] if not pd.isna(df_4h.iloc[-2]['EMA_200']) else df_4h['close'].mean()
-    close_1h, ema_50_1h = df_1h.iloc[-2]['close'], df_1h.iloc[-2]['EMA_50']
+    closed_4h = df_4h.iloc[-2]
+    closed_1h = df_1h.iloc[-2]
 
-    # Support & Resistance Zones (Excluding current live candle)
-    strong_support = min(df_4h['low'].iloc[:-1].tail(15).min(), df_1h['low'].iloc[:-1].tail(15).min())
-    strong_resistance = max(df_4h['high'].iloc[:-1].tail(15).max(), df_1h['high'].iloc[:-1].tail(15).max())
+    # Strong Support & Resistance from Deep 4H & 1H Data
+    strong_support_4h = df_4h['low'].iloc[:-1].tail(50).min()
+    strong_resistance_4h = df_4h['high'].iloc[:-1].tail(50).max()
+    
+    strong_support_1h = df_1h['low'].iloc[:-1].tail(30).min()
+    strong_resistance_1h = df_1h['high'].iloc[:-1].tail(30).max()
 
-    minor_support = df_15m['low'].iloc[:-1].tail(15).min()
-    minor_resistance = df_15m['high'].iloc[:-1].tail(15).max()
+    strong_support = min(strong_support_4h, strong_support_1h)
+    strong_resistance = max(strong_resistance_4h, strong_resistance_1h)
 
-    # Indicators based on CLOSED CANDLES
+    minor_support = df_15m['low'].iloc[:-1].tail(20).min()
+    minor_resistance = df_15m['high'].iloc[:-1].tail(20).max()
+
+    # Chart Pattern Detection
+    double_bottom, double_top = detect_chart_patterns(df_15m)
+
+    # SMC Structures (BOS / CHoCH & FVG Check)
+    fvg_bullish = df_1h.iloc[-2]['low'] > df_1h.iloc[-4]['high']
+    fvg_bearish = df_1h.iloc[-2]['high'] < df_1h.iloc[-4]['low']
+
+    recent_low_sweep = df_15m.iloc[-2]['low'] < df_15m['low'].iloc[:-3].tail(15).min()
+    recent_high_sweep = df_15m.iloc[-2]['high'] > df_15m['high'].iloc[:-3].tail(15).max()
+
+    # Technical Indicators
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
     df_15m['ATR'] = ta.volatility.average_true_range(df_15m['high'], df_15m['low'], df_15m['close'], window=14)
     df_15m['Vol_MA'] = df_15m['volume'].rolling(window=20).mean()
     df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], window=14)
 
-    closed_15m = df_15m.iloc[-2]  # Last Closed Candle
+    closed_15m = df_15m.iloc[-2]
     closed_5m = df_5m.iloc[-2]
     close_price, atr = closed_15m['close'], closed_15m['ATR']
 
-    at_strong_supp = (close_price - strong_support) / close_price < 0.008
-    at_minor_supp = (close_price - minor_support) / close_price < 0.005
-    at_strong_res = (strong_resistance - close_price) / close_price < 0.008
-    at_minor_res = (minor_resistance - close_price) / close_price < 0.005
+    at_strong_supp = (close_price - strong_support) / close_price < 0.012
+    at_strong_res = (strong_resistance - close_price) / close_price < 0.012
 
     bullish_15m, bearish_15m = detect_candlestick_patterns(df_15m)
     bids_vol, asks_vol = await check_order_book_depth(mexc, gate, symbol)
@@ -175,94 +227,114 @@ async def analyze_market(mexc, gate, symbol):
     signal_type = None
 
     # --- BUY / LONG SETUP ---
-    if close_1h > ema_50_1h or close_4h > ema_200_4h:
-        confidence_score += 15
-        reasons.append("Trend: HTF Bullish Structure")
+    if closed_1h['close'] > closed_1h['EMA_50'] or closed_4h['close'] > closed_4h['EMA_200']:
+        confidence_score += 20
+        reasons.append("Trend: HTF Bullish Market Structure")
 
         if at_strong_supp:
-            confidence_score += 25
-            reasons.append("Structure: Strong Support Zone (4H/1H)")
-        elif at_minor_supp:
+            confidence_score += 20
+            reasons.append("SMC Zone: HTF Strong Support / Demand Block")
+
+        if double_bottom:
             confidence_score += 15
-            reasons.append("Structure: Minor Support / 15m Order Block")
+            reasons.append("Chart Pattern: Double Bottom (W-Pattern) Confirmed")
+
+        if recent_low_sweep:
+            confidence_score += 10
+            reasons.append("SMC Liquidity: Sell-Side Liquidity Swept")
+
+        if fvg_bullish:
+            confidence_score += 10
+            reasons.append("SMC Imbalance: Bullish FVG Retest")
 
         if bullish_15m:
-            confidence_score += 20
-            reasons.append(f"Candle Pattern: {bullish_15m} (Confirmed Closed Candle)")
+            confidence_score += 10
+            reasons.append(f"Candle Pattern: {bullish_15m} (Closed Candle)")
 
-        if 30 <= closed_15m['RSI'] <= 42 or 30 <= closed_5m['RSI'] <= 42:
-            confidence_score += 15
-            reasons.append(f"RSI Support Zone: 15m RSI ({round(closed_15m['RSI'], 1)})")
+        if 25 <= closed_15m['RSI'] <= 38 or 25 <= closed_5m['RSI'] <= 38:
+            confidence_score += 5
+            reasons.append(f"RSI Oversold Zone: 15m RSI ({round(closed_15m['RSI'], 1)})")
 
         if bids_vol > asks_vol:
-            confidence_score += 10
-            reasons.append("Order Book: Higher Buying Demand")
+            confidence_score += 5
+            reasons.append("Order Book: Higher Buying Pressure")
 
         if closed_15m['volume'] > closed_15m['Vol_MA']:
-            confidence_score += 15
-            reasons.append("Volume: Spiking Above Average")
+            confidence_score += 5
+            reasons.append("Volume: High Volume Surge")
 
-        if confidence_score >= 65:
-            signal_type = "FUTURE LONG 🚀" if confidence_score >= 75 else "SPOT BUY 🛒"
+        if confidence_score >= 75:
+            signal_type = "FUTURE LONG 🚀" if confidence_score >= 80 else "SPOT BUY 🛒"
 
     # --- SELL / SHORT SETUP ---
-    elif close_1h < ema_50_1h or close_4h < ema_200_4h:
-        confidence_score += 15
-        reasons.append("Trend: HTF Bearish Structure")
+    elif closed_1h['close'] < closed_1h['EMA_50'] or closed_4h['close'] < closed_4h['EMA_200']:
+        confidence_score += 20
+        reasons.append("Trend: HTF Bearish Market Structure")
 
         if at_strong_res:
-            confidence_score += 25
-            reasons.append("Structure: Strong Resistance Zone (4H/1H)")
-        elif at_minor_res:
+            confidence_score += 20
+            reasons.append("SMC Zone: HTF Strong Resistance / Supply Block")
+
+        if double_top:
             confidence_score += 15
-            reasons.append("Structure: Minor Resistance / 15m Order Block")
+            reasons.append("Chart Pattern: Double Top (M-Pattern) Confirmed")
+
+        if recent_high_sweep:
+            confidence_score += 10
+            reasons.append("SMC Liquidity: Buy-Side Liquidity Swept")
+
+        if fvg_bearish:
+            confidence_score += 10
+            reasons.append("SMC Imbalance: Bearish FVG Retest")
 
         if bearish_15m:
-            confidence_score += 20
-            reasons.append(f"Candle Pattern: {bearish_15m} (Confirmed Closed Candle)")
+            confidence_score += 10
+            reasons.append(f"Candle Pattern: {bearish_15m} (Closed Candle)")
 
-        if 60 <= closed_15m['RSI'] <= 85 or 60 <= closed_5m['RSI'] <= 85:
-            confidence_score += 15
-            reasons.append(f"RSI Resistance Zone: 15m RSI ({round(closed_15m['RSI'], 1)})")
+        if 62 <= closed_15m['RSI'] <= 78 or 62 <= closed_5m['RSI'] <= 78:
+            confidence_score += 5
+            reasons.append(f"RSI Overbought Zone: 15m RSI ({round(closed_15m['RSI'], 1)})")
 
         if asks_vol > bids_vol:
-            confidence_score += 10
+            confidence_score += 5
             reasons.append("Order Book: Higher Selling Pressure")
 
         if closed_15m['volume'] > closed_15m['Vol_MA']:
-            confidence_score += 15
-            reasons.append("Volume: Spiking Above Average")
+            confidence_score += 5
+            reasons.append("Volume: High Volume Surge")
 
-        if confidence_score >= 65:
+        if confidence_score >= 75:
             signal_type = "FUTURE SHORT 📉"
 
-    # TAKE PROFIT & STOP LOSS ACCORDING TO CLOSED CANDLE
-    if confidence_score >= 65 and signal_type:
+    # ACCURATE TAKE PROFIT & STOP LOSS CALCULATION
+    if confidence_score >= 75 and signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
-            sl = round(close_price - (atr * 1.5), 4)
+            sl = close_price - (atr * 1.5)
             risk = close_price - sl
-            tp1 = round(close_price + (risk * 1.5), 4)
-            tp2 = round(close_price + (risk * 3.0), 4)
+            tp1 = close_price + (risk * 1.5)
+            tp2 = close_price + (risk * 3.0)
             
-            calculated_tp3 = round(close_price + (risk * 4.5), 4)
-            tp3 = max(calculated_tp3, round(minor_resistance, 4)) if minor_resistance > tp2 else calculated_tp3
+            calculated_tp3 = close_price + (risk * 4.5)
+            tp3 = max(calculated_tp3, minor_resistance) if minor_resistance > tp2 else calculated_tp3
 
         else:
-            sl = round(close_price + (atr * 1.5), 4)
+            sl = close_price + (atr * 1.5)
             risk = sl - close_price
-            tp1 = round(close_price - (risk * 1.5), 4)
-            tp2 = round(close_price - (risk * 3.0), 4)
+            tp1 = close_price - (risk * 1.5)
+            tp2 = close_price - (risk * 3.0)
             
-            calculated_tp3 = round(close_price - (risk * 4.5), 4)
-            tp3 = min(calculated_tp3, round(minor_support, 4)) if minor_support < tp2 else calculated_tp3
+            calculated_tp3 = close_price - (risk * 4.5)
+            tp3 = min(calculated_tp3, minor_support) if minor_support < tp2 else calculated_tp3
 
         return {
             'symbol': symbol,
             'signal_type': signal_type,
             'confidence': f"{confidence_score}%",
-            'entry': round(close_price, 4),
-            'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
-            'sl': sl,
+            'entry': format_price(close_price),
+            'tp1': format_price(tp1), 
+            'tp2': format_price(tp2), 
+            'tp3': format_price(tp3),
+            'sl': format_price(sl),
             'reasons': reasons
         }
 
@@ -271,7 +343,7 @@ async def analyze_market(mexc, gate, symbol):
 async def market_scanner():
     """Fast Continuous Scanner Loop"""
     print("=== STARTING PRECISION SMC SIGNAL SCANNER ===", flush=True)
-    send_telegram_message("🎯 Precision Crypto Signal Bot (Closed Candlesticks Only) Active!")
+    send_telegram_message("🎯 Precision Crypto Signal Bot (Deep SMC + Patterns + Indicators) Active!")
 
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
