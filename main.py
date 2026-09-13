@@ -17,7 +17,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Institutional SMC, Chart Patterns & Indicators Signal Engine Active!", 200
+    return "Institutional SMC, Chart Patterns, Indicators & Paper Trading Engine Active!", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -36,7 +36,11 @@ TOP_COINS = [
     'JUP/USDT', 'ORDI/USDT', 'MEME/USDT', 'NOT/USDT', 'WLD/USDT', 'ONDO/USDT', 'ENA/USDT', 'STRK/USDT'
 ]
 
+# Manyan Coins (Large Cap) domin sanya Jarin $5,000
+LARGE_CAP_COINS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'LINK/USDT', 'DOT/USDT', 'BCH/USDT', 'LTC/USDT']
+
 SENT_SIGNALS = {}
+ACTIVE_PAPER_TRADES = []  # Adana buɗaɗɗen Paper Trades
 COOLDOWN_SECONDS = 45 * 60  # 45 Minutes Cooldown per coin
 
 def send_telegram_message(message):
@@ -66,15 +70,126 @@ def format_price(price):
     else:
         return f"{price:.2f}"
 
+# --- PAPER TRADING ENGINE ---
+def execute_paper_trade(signal_data):
+    """Sanya Paper Trade ta atomatik tare da raba jari sakamakon Market Cap"""
+    symbol = signal_data['symbol']
+    entry_price = float(signal_data['entry'])
+    sl = float(signal_data['sl'])
+    tp1 = float(signal_data['tp1'])
+    tp2 = float(signal_data['tp2'])
+    tp3 = float(signal_data['tp3'])
+    signal_type = signal_data['signal_type']
+
+    # Zaɓan jarin shiga kasuwa
+    if symbol in LARGE_CAP_COINS:
+        allocated_capital = 5000.0  # $5,000 domin Large Cap Coins
+    else:
+        allocated_capital = 2000.0  # $2,000 domin sauran Coins
+
+    coin_amount = allocated_capital / entry_price
+
+    trade = {
+        'symbol': symbol,
+        'type': 'LONG' if ("BUY" in signal_type or "LONG" in signal_type) else 'SHORT',
+        'entry': entry_price,
+        'capital': allocated_capital,
+        'amount': coin_amount,
+        'sl': sl,
+        'tp1': tp1,
+        'tp2': tp2,
+        'tp3': tp3,
+        'open_time': time.strftime('%H:%M:%S')
+    }
+
+    ACTIVE_PAPER_TRADES.append(trade)
+
+    paper_msg = (
+        f"📝 **AUTOMATED PAPER TRADE OPENED** 📝\n\n"
+        f"🪙 **Coin:** {symbol}\n"
+        f"📈 **Type:** {trade['type']}\n"
+        f"💰 **Position Capital:** ${allocated_capital:,.2f}\n"
+        f"📥 **Entry Price:** {signal_data['entry']}\n"
+        f"🛑 **Stop Loss:** {signal_data['sl']}\n"
+        f"🎯 **Target TP1:** {signal_data['tp1']}\n"
+        f"⏱️ **Time:** {trade['open_time']}"
+    )
+    send_telegram_message(paper_msg)
+
+async def check_active_paper_trades(mexc, gate):
+    """Sa ido a kan buɗaɗɗen sakonnin Paper Trades domin duba TP/SL"""
+    global ACTIVE_PAPER_TRADES
+    if not ACTIVE_PAPER_TRADES:
+        return
+
+    for trade in ACTIVE_PAPER_TRADES[:]:
+        symbol = trade['symbol']
+        try:
+            ticker = await mexc.fetch_ticker(symbol)
+            current_price = ticker['close']
+        except Exception:
+            try:
+                ticker = await gate.fetch_ticker(symbol)
+                current_price = ticker['close']
+            except Exception:
+                continue
+
+        is_long = trade['type'] == 'LONG'
+        closed = False
+        pnl = 0.0
+        reason = ""
+
+        # Long Position Rules
+        if is_long:
+            if current_price <= trade['sl']:
+                closed = True
+                pnl = (trade['sl'] - trade['entry']) * trade['amount']
+                reason = "🛑 Stop Loss Hit"
+            elif current_price >= trade['tp3']:
+                closed = True
+                pnl = (trade['tp3'] - trade['entry']) * trade['amount']
+                reason = "🎯 TP3 Hit (Maximum Profit!)"
+            elif current_price >= trade['tp1']:
+                closed = True
+                pnl = (trade['tp1'] - trade['entry']) * trade['amount']
+                reason = "🎯 TP1 Target Reached"
+
+        # Short Position Rules
+        else:
+            if current_price >= trade['sl']:
+                closed = True
+                pnl = (trade['entry'] - trade['sl']) * trade['amount']
+                reason = "🛑 Stop Loss Hit"
+            elif current_price <= trade['tp3']:
+                closed = True
+                pnl = (trade['entry'] - trade['tp3']) * trade['amount']
+                reason = "🎯 TP3 Hit (Maximum Profit!)"
+            elif current_price <= trade['tp1']:
+                closed = True
+                pnl = (trade['entry'] - trade['tp1']) * trade['amount']
+                reason = "🎯 TP1 Target Reached"
+
+        if closed:
+            ACTIVE_PAPER_TRADES.remove(trade)
+            pnl_icon = "🟢 Profit" if pnl >= 0 else "🔴 Loss"
+            close_msg = (
+                f"🔔 **PAPER TRADE CLOSED** 🔔\n\n"
+                f"🪙 **Coin:** {symbol}\n"
+                f"📌 **Status:** {reason}\n"
+                f"💵 **Exit Price:** {format_price(current_price)}\n"
+                f"📊 **Result PnL:** {pnl_icon} ${pnl:,.2f}"
+            )
+            send_telegram_message(close_msg)
+
 async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=300):
-    """Fetch Deep Candlestick Data safely (Limit=300 for Strong S/R)"""
+    """Fetch Deep Candlestick Data safely"""
     try:
         data = await mexc.fetch_ohlcv(symbol, timeframe, limit=limit)
         if data and len(data) > 0:
             return pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     except Exception:
         pass
-        
+
     try:
         data = await gate.fetch_ohlcv(symbol, timeframe, limit=limit)
         if data and len(data) > 0:
@@ -108,8 +223,7 @@ def detect_chart_patterns(df):
     if len(recent_lows) >= 30:
         min_low_1 = min(recent_lows[:15])
         min_low_2 = min(recent_lows[15:])
-        
-        # Check if two lows are within 0.35% range
+
         if abs(min_low_1 - min_low_2) / current_close < 0.0035:
             if current_close > min_low_2:
                 double_bottom = True
@@ -117,8 +231,7 @@ def detect_chart_patterns(df):
     if len(recent_highs) >= 30:
         max_high_1 = max(recent_highs[:15])
         max_high_2 = max(recent_highs[15:])
-        
-        # Check if two highs are within 0.35% range
+
         if abs(max_high_1 - max_high_2) / current_close < 0.0035:
             if current_close < max_high_2:
                 double_top = True
@@ -127,7 +240,7 @@ def detect_chart_patterns(df):
 
 def detect_candlestick_patterns(df):
     """CLOSED CANDLESTICK ONLY Recognition Engine"""
-    c0 = df.iloc[-2]  # Closed Candle
+    c0 = df.iloc[-2]
     c1 = df.iloc[-3]  
     c2 = df.iloc[-4]  
 
@@ -176,17 +289,15 @@ async def analyze_market(mexc, gate, symbol):
     if df_4h is None or df_1h is None or df_15m is None or df_5m is None:
         return None, 0
 
-    # Trend Indicators
     df_4h['EMA_200'] = ta.trend.ema_indicator(df_4h['close'], window=200)
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
 
     closed_4h = df_4h.iloc[-2]
     closed_1h = df_1h.iloc[-2]
 
-    # Strong Support & Resistance from Deep 4H & 1H Data
     strong_support_4h = df_4h['low'].iloc[:-1].tail(50).min()
     strong_resistance_4h = df_4h['high'].iloc[:-1].tail(50).max()
-    
+
     strong_support_1h = df_1h['low'].iloc[:-1].tail(30).min()
     strong_resistance_1h = df_1h['high'].iloc[:-1].tail(30).max()
 
@@ -196,17 +307,14 @@ async def analyze_market(mexc, gate, symbol):
     minor_support = df_15m['low'].iloc[:-1].tail(20).min()
     minor_resistance = df_15m['high'].iloc[:-1].tail(20).max()
 
-    # Chart Pattern Detection
     double_bottom, double_top = detect_chart_patterns(df_15m)
 
-    # SMC Structures (BOS / CHoCH & FVG Check)
     fvg_bullish = df_1h.iloc[-2]['low'] > df_1h.iloc[-4]['high']
     fvg_bearish = df_1h.iloc[-2]['high'] < df_1h.iloc[-4]['low']
 
     recent_low_sweep = df_15m.iloc[-2]['low'] < df_15m['low'].iloc[:-3].tail(15).min()
     recent_high_sweep = df_15m.iloc[-2]['high'] > df_15m['high'].iloc[:-3].tail(15).max()
 
-    # Technical Indicators
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
     df_15m['ATR'] = ta.volatility.average_true_range(df_15m['high'], df_15m['low'], df_15m['close'], window=14)
     df_15m['Vol_MA'] = df_15m['volume'].rolling(window=20).mean()
@@ -306,23 +414,20 @@ async def analyze_market(mexc, gate, symbol):
         if confidence_score >= 75:
             signal_type = "FUTURE SHORT 📉"
 
-    # ACCURATE TAKE PROFIT & STOP LOSS CALCULATION
+    # TAKE PROFIT & STOP LOSS CALCULATION
     if confidence_score >= 75 and signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
             sl = close_price - (atr * 1.5)
             risk = close_price - sl
             tp1 = close_price + (risk * 1.5)
             tp2 = close_price + (risk * 3.0)
-            
             calculated_tp3 = close_price + (risk * 4.5)
             tp3 = max(calculated_tp3, minor_resistance) if minor_resistance > tp2 else calculated_tp3
-
         else:
             sl = close_price + (atr * 1.5)
             risk = sl - close_price
             tp1 = close_price - (risk * 1.5)
             tp2 = close_price - (risk * 3.0)
-            
             calculated_tp3 = close_price - (risk * 4.5)
             tp3 = min(calculated_tp3, minor_support) if minor_support < tp2 else calculated_tp3
 
@@ -341,9 +446,9 @@ async def analyze_market(mexc, gate, symbol):
     return None, confidence_score
 
 async def market_scanner():
-    """Fast Continuous Scanner Loop with Detailed Render Logs"""
-    print("=== STARTING PRECISION SMC SIGNAL SCANNER ===", flush=True)
-    send_telegram_message("🎯 Precision Crypto Signal Bot (Deep SMC + Patterns + Indicators) Active!")
+    """Fast Continuous Scanner Loop with Paper Trading Support"""
+    print("=== STARTING PRECISION SMC SIGNAL & PAPER TRADING SCANNER ===", flush=True)
+    send_telegram_message("🎯 Precision Crypto Signal & Auto Paper Trading Engine Active!")
 
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
@@ -352,6 +457,9 @@ async def market_scanner():
         while True:
             current_time = time.time()
             print(f"[SCANNER] Cycle started at {time.strftime('%H:%M:%S')}", flush=True)
+
+            # Check Auto Paper Trades
+            await check_active_paper_trades(mexc, gate)
 
             for index, symbol in enumerate(TOP_COINS, start=1):
                 signal_data, current_score = await analyze_market(mexc, gate, symbol)
@@ -383,13 +491,16 @@ async def market_scanner():
                         )
                         send_telegram_message(msg)
 
+                        # Auto Execute Paper Trade
+                        execute_paper_trade(signal_data)
+
                 await asyncio.sleep(0.3)
 
             print("[SCANNER] Cycle finished. Resting for 2 minutes...", flush=True)
             await asyncio.sleep(120)
 
     finally:
-        await mexc.close()
+        await mexc.
         await gate.close()
 
 def main_loop():
