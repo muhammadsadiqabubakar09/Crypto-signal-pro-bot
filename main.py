@@ -33,11 +33,16 @@ TOP_COINS = [
     'LTC/USDT', 'SHIB/USDT', 'ARB/USDT', 'INJ/USDT', 'TIA/USDT', 'OP/USDT', 'RENDER/USDT', 'WIF/USDT',
     'FLOKI/USDT', 'BONK/USDT', 'SEI/USDT', 'STX/USDT', 'GALA/USDT', 'RUNE/USDT', 'AAVE/USDT', 'ICP/USDT',
     'FIL/USDT', 'ATOM/USDT', 'ETC/USDT', 'XLM/USDT', 'UNI/USDT', 'BCH/USDT', 'LDO/USDT', 'KAS/USDT',
-    'JUP/USDT', 'ORDI/USDT', 'MEME/USDT', 'NOT/USDT', 'WLD/USDT', 'ONDO/USDT', 'ENA/USDT', 'STRK/USDT'
+    'JUP/USDT', 'ORDI/USDT', 'MEME/USDT', 'NOT/USDT', 'WLD/USDT', 'ONDO/USDT', 'ENA/USDT', 'STRK/USDT',
+    'TAO/USDT', 'PENDLE/USDT', 'POPCAT/USDT', 'TON/USDT', 'TRX/USDT', 'FTM/USDT', 'BRETT/USDT', '1000SATS/USDT', 'AKT/USDT', 'SNX/USDT'
 ]
 
-# Manyan Coins (Large Cap) domin sanya Jarin $5,000
-LARGE_CAP_COINS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'LINK/USDT', 'DOT/USDT', 'BCH/USDT', 'LTC/USDT']
+# Manyan Coins Masu High Market Cap & Volume (Wadanda ake shiga kasuwarsu da Jarin $5,000)
+LARGE_CAP_COINS = [
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'TON/USDT', 'TRX/USDT',
+    'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'BCH/USDT', 'LTC/USDT',
+    'SUI/USDT', 'NEAR/USDT', 'APT/USDT'
+]
 
 SENT_SIGNALS = {}
 ACTIVE_PAPER_TRADES = []  # Adana buɗaɗɗen Paper Trades
@@ -72,7 +77,7 @@ def format_price(price):
 
 # --- PAPER TRADING ENGINE ---
 def execute_paper_trade(signal_data):
-    """Sanya Paper Trade ta atomatik tare da raba jari sakamakon Market Cap"""
+    """Sanya Paper Trade ta atomatik tare da raba jari ($5,000 vs $2,000)"""
     symbol = signal_data['symbol']
     entry_price = float(signal_data['entry'])
     sl = float(signal_data['sl'])
@@ -80,12 +85,13 @@ def execute_paper_trade(signal_data):
     tp2 = float(signal_data['tp2'])
     tp3 = float(signal_data['tp3'])
     signal_type = signal_data['signal_type']
+    reasons = signal_data.get('reasons', [])
 
-    # Zaɓan jarin shiga kasuwa
+    # Raba Jari ($5,000 domin High Volume/Market Cap Coins, $2,000 domin sauran)
     if symbol in LARGE_CAP_COINS:
-        allocated_capital = 5000.0  # $5,000 domin Large Cap Coins
+        allocated_capital = 5000.0
     else:
-        allocated_capital = 2000.0  # $2,000 domin sauran Coins
+        allocated_capital = 2000.0
 
     coin_amount = allocated_capital / entry_price
 
@@ -104,6 +110,8 @@ def execute_paper_trade(signal_data):
 
     ACTIVE_PAPER_TRADES.append(trade)
 
+    reasons_formatted = "\n".join([f"• {r}" for r in reasons])
+
     paper_msg = (
         f"📝 **AUTOMATED PAPER TRADE OPENED** 📝\n\n"
         f"🪙 **Coin:** {symbol}\n"
@@ -112,7 +120,10 @@ def execute_paper_trade(signal_data):
         f"📥 **Entry Price:** {signal_data['entry']}\n"
         f"🛑 **Stop Loss:** {signal_data['sl']}\n"
         f"🎯 **Target TP1:** {signal_data['tp1']}\n"
-        f"⏱️ **Time:** {trade['open_time']}"
+        f"🎯 **Target TP2:** {signal_data['tp2']}\n"
+        f"🎯 **Target TP3:** {signal_data['tp3']}\n"
+        f"⏱️ **Time:** {trade['open_time']}\n\n"
+        f"💡 **Trade Confirmations & Reasons:**\n{reasons_formatted}"
     )
     send_telegram_message(paper_msg)
 
@@ -180,7 +191,6 @@ async def check_active_paper_trades(mexc, gate):
                 f"📊 **Result PnL:** {pnl_icon} ${pnl:,.2f}"
             )
             send_telegram_message(close_msg)
-
 async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=300):
     """Fetch Deep Candlestick Data safely"""
     try:
@@ -500,7 +510,7 @@ async def market_scanner():
             await asyncio.sleep(120)
 
     finally:
-        await mexc.
+        await mexc.close()
         await gate.close()
 
 def main_loop():
