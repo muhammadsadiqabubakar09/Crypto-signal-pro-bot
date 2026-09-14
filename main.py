@@ -37,7 +37,6 @@ TOP_COINS = [
     'TAO/USDT', 'PENDLE/USDT', 'POPCAT/USDT', 'TON/USDT', 'TRX/USDT', 'FTM/USDT', 'BRETT/USDT', '1000SATS/USDT', 'AKT/USDT', 'SNX/USDT'
 ]
 
-# Manyan Coins Masu High Market Cap & Volume (Wadanda ake shiga kasuwarsu da Jarin $5,000)
 LARGE_CAP_COINS = [
     'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'TON/USDT', 'TRX/USDT',
     'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'BCH/USDT', 'LTC/USDT',
@@ -45,8 +44,8 @@ LARGE_CAP_COINS = [
 ]
 
 SENT_SIGNALS = {}
-ACTIVE_PAPER_TRADES = []  # Adana buɗaɗɗen Paper Trades
-COOLDOWN_SECONDS = 45 * 60  # 45 Minutes Cooldown per coin
+ACTIVE_PAPER_TRADES = []
+COOLDOWN_SECONDS = 60 * 60  # An karata cooldown zuwa awa 1 domin gudun duplicates
 
 def send_telegram_message(message):
     """Safely send messages to Telegram"""
@@ -75,10 +74,16 @@ def format_price(price):
     else:
         return f"{price:.2f}"
 
-# --- PAPER TRADING ENGINE ---
+# --- PAPER TRADING ENGINE WITH DUPLICATE BLOCKER ---
 def execute_paper_trade(signal_data):
-    """Sanya Paper Trade ta atomatik tare da raba jari ($5,000 vs $2,000)"""
+    """Sanya Paper Trade ta atomatik tare da tace duplicated trades"""
     symbol = signal_data['symbol']
+    
+    # Kariya daga maimaita bude trade na coin guda a lokaci guda
+    for trade in ACTIVE_PAPER_TRADES:
+        if trade['symbol'] == symbol:
+            return
+
     entry_price = float(signal_data['entry'])
     sl = float(signal_data['sl'])
     tp1 = float(signal_data['tp1'])
@@ -87,12 +92,7 @@ def execute_paper_trade(signal_data):
     signal_type = signal_data['signal_type']
     reasons = signal_data.get('reasons', [])
 
-    # Raba Jari ($5,000 domin High Volume/Market Cap Coins, $2,000 domin sauran)
-    if symbol in LARGE_CAP_COINS:
-        allocated_capital = 5000.0
-    else:
-        allocated_capital = 2000.0
-
+    allocated_capital = 5000.0 if symbol in LARGE_CAP_COINS else 2000.0
     coin_amount = allocated_capital / entry_price
 
     trade = {
@@ -102,9 +102,12 @@ def execute_paper_trade(signal_data):
         'capital': allocated_capital,
         'amount': coin_amount,
         'sl': sl,
+        'original_sl': sl,
         'tp1': tp1,
         'tp2': tp2,
         'tp3': tp3,
+        'hit_tp1': False,
+        'hit_tp2': False,
         'open_time': time.strftime('%H:%M:%S')
     }
 
@@ -118,7 +121,7 @@ def execute_paper_trade(signal_data):
         f"📈 **Type:** {trade['type']}\n"
         f"💰 **Position Capital:** ${allocated_capital:,.2f}\n"
         f"📥 **Entry Price:** {signal_data['entry']}\n"
-        f"🛑 **Stop Loss:** {signal_data['sl']}\n"
+        f"🛑 **Stop Loss (Optimized 2.5x ATR):** {signal_data['sl']}\n"
         f"🎯 **Target TP1:** {signal_data['tp1']}\n"
         f"🎯 **Target TP2:** {signal_data['tp2']}\n"
         f"🎯 **Target TP3:** {signal_data['tp3']}\n"
@@ -128,7 +131,7 @@ def execute_paper_trade(signal_data):
     send_telegram_message(paper_msg)
 
 async def check_active_paper_trades(mexc, gate):
-    """Sa ido a kan buɗaɗɗen sakonnin Paper Trades domin duba TP/SL"""
+    """Sa ido a kan paper trades tare da sarrafa Breakeven/Partial Profits"""
     global ACTIVE_PAPER_TRADES
     if not ACTIVE_PAPER_TRADES:
         return
@@ -150,35 +153,36 @@ async def check_active_paper_trades(mexc, gate):
         pnl = 0.0
         reason = ""
 
-        # Long Position Rules
         if is_long:
+            # Trailing Stop to Breakeven bayan an samu TP1
+            if current_price >= trade['tp1'] and not trade['hit_tp1']:
+                trade['hit_tp1'] = True
+                trade['sl'] = trade['entry']  # Maida Stoploss zuwa Breakeven
+                send_telegram_message(f"🎯 **{symbol} TP1 Hit!** Moving Stop Loss to Breakeven ({format_price(trade['entry'])}).")
+
             if current_price <= trade['sl']:
                 closed = True
                 pnl = (trade['sl'] - trade['entry']) * trade['amount']
-                reason = "🛑 Stop Loss Hit"
+                reason = "🛡️ Breakeven Exit" if trade['hit_tp1'] else "🛑 Stop Loss Hit"
             elif current_price >= trade['tp3']:
                 closed = True
                 pnl = (trade['tp3'] - trade['entry']) * trade['amount']
                 reason = "🎯 TP3 Hit (Maximum Profit!)"
-            elif current_price >= trade['tp1']:
-                closed = True
-                pnl = (trade['tp1'] - trade['entry']) * trade['amount']
-                reason = "🎯 TP1 Target Reached"
 
-        # Short Position Rules
         else:
+            if current_price <= trade['tp1'] and not trade['hit_tp1']:
+                trade['hit_tp1'] = True
+                trade['sl'] = trade['entry']
+                send_telegram_message(f"🎯 **{symbol} TP1 Hit!** Moving Stop Loss to Breakeven ({format_price(trade['entry'])}).")
+
             if current_price >= trade['sl']:
                 closed = True
                 pnl = (trade['entry'] - trade['sl']) * trade['amount']
-                reason = "🛑 Stop Loss Hit"
+                reason = "🛡️ Breakeven Exit" if trade['hit_tp1'] else "🛑 Stop Loss Hit"
             elif current_price <= trade['tp3']:
                 closed = True
                 pnl = (trade['entry'] - trade['tp3']) * trade['amount']
                 reason = "🎯 TP3 Hit (Maximum Profit!)"
-            elif current_price <= trade['tp1']:
-                closed = True
-                pnl = (trade['entry'] - trade['tp1']) * trade['amount']
-                reason = "🎯 TP1 Target Reached"
 
         if closed:
             ACTIVE_PAPER_TRADES.remove(trade)
@@ -381,8 +385,8 @@ async def analyze_market(mexc, gate, symbol):
             confidence_score += 5
             reasons.append("Volume: High Volume Surge")
 
-        if confidence_score >= 75:
-            signal_type = "FUTURE LONG 🚀" if confidence_score >= 80 else "SPOT BUY 🛒"
+        if confidence_score >= 80:  # An daga min maki zuwa 80% domin tabbatar da tsaro
+            signal_type = "FUTURE LONG 🚀" if confidence_score >= 85 else "SPOT BUY 🛒"
 
     # --- SELL / SHORT SETUP ---
     elif closed_1h['close'] < closed_1h['EMA_50'] or closed_4h['close'] < closed_4h['EMA_200']:
@@ -421,24 +425,24 @@ async def analyze_market(mexc, gate, symbol):
             confidence_score += 5
             reasons.append("Volume: High Volume Surge")
 
-        if confidence_score >= 75:
+        if confidence_score >= 80:
             signal_type = "FUTURE SHORT 📉"
 
-    # TAKE PROFIT & STOP LOSS CALCULATION
-    if confidence_score >= 75 and signal_type:
+    # OPTIMIZED STOP LOSS (ATR 2.5x Multiplier) & TAKE PROFIT
+    if confidence_score >= 80 and signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
-            sl = close_price - (atr * 1.5)
+            sl = close_price - (atr * 2.5)  # An fadaɗa SL zuwa 2.5x ATR domin samun fili
             risk = close_price - sl
             tp1 = close_price + (risk * 1.5)
-            tp2 = close_price + (risk * 3.0)
-            calculated_tp3 = close_price + (risk * 4.5)
+            tp2 = close_price + (risk * 2.5)
+            calculated_tp3 = close_price + (risk * 3.5)
             tp3 = max(calculated_tp3, minor_resistance) if minor_resistance > tp2 else calculated_tp3
         else:
-            sl = close_price + (atr * 1.5)
+            sl = close_price + (atr * 2.5)
             risk = sl - close_price
             tp1 = close_price - (risk * 1.5)
-            tp2 = close_price - (risk * 3.0)
-            calculated_tp3 = close_price - (risk * 4.5)
+            tp2 = close_price - (risk * 2.5)
+            calculated_tp3 = close_price - (risk * 3.5)
             tp3 = min(calculated_tp3, minor_support) if minor_support < tp2 else calculated_tp3
 
         return {
@@ -468,7 +472,6 @@ async def market_scanner():
             current_time = time.time()
             print(f"[SCANNER] Cycle started at {time.strftime('%H:%M:%S')}", flush=True)
 
-            # Check Auto Paper Trades
             await check_active_paper_trades(mexc, gate)
 
             for index, symbol in enumerate(TOP_COINS, start=1):
@@ -501,7 +504,6 @@ async def market_scanner():
                         )
                         send_telegram_message(msg)
 
-                        # Auto Execute Paper Trade
                         execute_paper_trade(signal_data)
 
                 await asyncio.sleep(0.3)
