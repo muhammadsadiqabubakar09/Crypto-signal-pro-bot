@@ -392,6 +392,9 @@ async def market_scanner():
                 try:
                     signal_data, current_score = await analyze_market(mexc, gate, symbol)
 
+                    # Wannan layin shine sabon karawa domin nuna sunan coin da makin ta a Render Logs
+                    print(f"[{index}/{len(TOP_COINS)}] Scanned {symbol} | Confluence Score: {current_score}%", flush=True)
+
                     if signal_data:
                         signal_type = signal_data['signal_type']
                         signal_key = f"{symbol}_{signal_type}"
