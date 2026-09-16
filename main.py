@@ -45,7 +45,7 @@ LARGE_CAP_COINS = [
 
 SENT_SIGNALS = {}
 ACTIVE_PAPER_TRADES = []
-COOLDOWN_SECONDS = 60 * 60  # An karata cooldown zuwa awa 1 domin gudun duplicates
+COOLDOWN_SECONDS = 60 * 60  # Cooldown na awa 1
 
 def send_telegram_message(message):
     """Safely send messages to Telegram"""
@@ -74,12 +74,10 @@ def format_price(price):
     else:
         return f"{price:.2f}"
 
-# --- PAPER TRADING ENGINE WITH DUPLICATE BLOCKER ---
 def execute_paper_trade(signal_data):
     """Sanya Paper Trade ta atomatik tare da tace duplicated trades"""
     symbol = signal_data['symbol']
-    
-    # Kariya daga maimaita bude trade na coin guda a lokaci guda
+
     for trade in ACTIVE_PAPER_TRADES:
         if trade['symbol'] == symbol:
             return
@@ -107,7 +105,6 @@ def execute_paper_trade(signal_data):
         'tp2': tp2,
         'tp3': tp3,
         'hit_tp1': False,
-        'hit_tp2': False,
         'open_time': time.strftime('%H:%M:%S')
     }
 
@@ -121,7 +118,7 @@ def execute_paper_trade(signal_data):
         f"📈 **Type:** {trade['type']}\n"
         f"💰 **Position Capital:** ${allocated_capital:,.2f}\n"
         f"📥 **Entry Price:** {signal_data['entry']}\n"
-        f"🛑 **Stop Loss (Optimized 2.5x ATR):** {signal_data['sl']}\n"
+        f"🛑 **Stop Loss:** {signal_data['sl']}\n"
         f"🎯 **Target TP1:** {signal_data['tp1']}\n"
         f"🎯 **Target TP2:** {signal_data['tp2']}\n"
         f"🎯 **Target TP3:** {signal_data['tp3']}\n"
@@ -154,10 +151,9 @@ async def check_active_paper_trades(mexc, gate):
         reason = ""
 
         if is_long:
-            # Trailing Stop to Breakeven bayan an samu TP1
             if current_price >= trade['tp1'] and not trade['hit_tp1']:
                 trade['hit_tp1'] = True
-                trade['sl'] = trade['entry']  # Maida Stoploss zuwa Breakeven
+                trade['sl'] = trade['entry']
                 send_telegram_message(f"🎯 **{symbol} TP1 Hit!** Moving Stop Loss to Breakeven ({format_price(trade['entry'])}).")
 
             if current_price <= trade['sl']:
@@ -173,7 +169,7 @@ async def check_active_paper_trades(mexc, gate):
             if current_price <= trade['tp1'] and not trade['hit_tp1']:
                 trade['hit_tp1'] = True
                 trade['sl'] = trade['entry']
-                send_telegram_message(f"🎯 **{symbol} TP1 Hit!** Moving Stop Loss to Breakeven ({format_price(trade['entry'])}).")
+                send_telegram_message(f"🎯 **{symbol} SHORT TP1 Hit!** Moving Stop Loss to Breakeven ({format_price(trade['entry'])}).")
 
             if current_price >= trade['sl']:
                 closed = True
@@ -195,8 +191,8 @@ async def check_active_paper_trades(mexc, gate):
                 f"📊 **Result PnL:** {pnl_icon} ${pnl:,.2f}"
             )
             send_telegram_message(close_msg)
+
 async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=300):
-    """Fetch Deep Candlestick Data safely"""
     try:
         data = await mexc.fetch_ohlcv(symbol, timeframe, limit=limit)
         if data and len(data) > 0:
@@ -212,9 +208,7 @@ async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=300):
         pass
 
     return None
-
 async def check_order_book_depth(mexc, gate, symbol):
-    """Check Order Book Depth Pressure"""
     try:
         order_book = await mexc.fetch_order_book(symbol, limit=20)
         return sum([b[1] for b in order_book['bids']]), sum([a[1] for a in order_book['asks']])
@@ -226,37 +220,26 @@ async def check_order_book_depth(mexc, gate, symbol):
             return 0, 0
 
 def detect_chart_patterns(df):
-    """Detect Double Bottom (W) and Double Top (M) Patterns using Closed Candles"""
     recent_lows = df['low'].iloc[:-1].tail(30).values
     recent_highs = df['high'].iloc[:-1].tail(30).values
     current_close = df.iloc[-2]['close']
 
-    double_bottom = False
-    double_top = False
+    double_bottom, double_top = False, False
 
     if len(recent_lows) >= 30:
-        min_low_1 = min(recent_lows[:15])
-        min_low_2 = min(recent_lows[15:])
-
-        if abs(min_low_1 - min_low_2) / current_close < 0.0035:
-            if current_close > min_low_2:
-                double_bottom = True
+        min_low_1, min_low_2 = min(recent_lows[:15]), min(recent_lows[15:])
+        if abs(min_low_1 - min_low_2) / current_close < 0.0035 and current_close > min_low_2:
+            double_bottom = True
 
     if len(recent_highs) >= 30:
-        max_high_1 = max(recent_highs[:15])
-        max_high_2 = max(recent_highs[15:])
-
-        if abs(max_high_1 - max_high_2) / current_close < 0.0035:
-            if current_close < max_high_2:
-                double_top = True
+        max_high_1, max_high_2 = max(recent_highs[:15]), max(recent_highs[15:])
+        if abs(max_high_1 - max_high_2) / current_close < 0.0035 and current_close < max_high_2:
+            double_top = True
 
     return double_bottom, double_top
 
 def detect_candlestick_patterns(df):
-    """CLOSED CANDLESTICK ONLY Recognition Engine"""
-    c0 = df.iloc[-2]
-    c1 = df.iloc[-3]  
-    c2 = df.iloc[-4]  
+    c0, c1, c2 = df.iloc[-2], df.iloc[-3], df.iloc[-4]
 
     def body(c): return abs(c['close'] - c['open'])
     def is_green(c): return c['close'] > c['open']
@@ -264,194 +247,120 @@ def detect_candlestick_patterns(df):
     def upper_wick(c): return c['high'] - max(c['open'], c['close'])
     def lower_wick(c): return min(c['open'], c['close']) - c['low']
 
-    bullish_pattern = None
-    bearish_pattern = None
+    bullish_pattern, bearish_pattern = None, None
 
     if is_green(c0) and is_red(c1) and c0['close'] > c1['open'] and c0['open'] < c1['close']:
         bullish_pattern = "Bullish Engulfing"
     elif lower_wick(c0) > (2 * body(c0)) and upper_wick(c0) <= (0.3 * body(c0)):
         bullish_pattern = "Hammer Pattern"
-    elif upper_wick(c0) > (2 * body(c0)) and lower_wick(c0) <= (0.3 * body(c0)) and is_green(c0):
-        bullish_pattern = "Inverted Hammer"
     elif abs(c0['low'] - c1['low']) / c0['close'] < 0.0015 and is_red(c1) and is_green(c0):
         bullish_pattern = "Tweezer Bottom"
-    elif is_green(c0) and body(c0) > (0.85 * (c0['high'] - c0['low'])):
-        bullish_pattern = "Bullish Marubozu"
-    elif is_red(c2) and body(c1) < (0.3 * body(c2)) and is_green(c0) and c0['close'] > ((c2['open'] + c2['close']) / 2):
-        bullish_pattern = "Morning Star"
-    elif is_green(c2) and is_green(c1) and is_green(c0) and c0['close'] > c1['close'] > c2['close']:
-        bullish_pattern = "Three White Soldiers"
 
     if is_red(c0) and is_green(c1) and c0['close'] < c1['open'] and c0['open'] > c1['close']:
         bearish_pattern = "Bearish Engulfing"
     elif abs(c0['high'] - c1['high']) / c0['close'] < 0.0015 and is_green(c1) and is_red(c0):
         bearish_pattern = "Tweezer Top"
-    elif is_red(c0) and body(c0) > (0.85 * (c0['high'] - c0['low'])):
-        bearish_pattern = "Bearish Marubozu"
-    elif is_green(c2) and body(c1) < (0.3 * body(c2)) and is_red(c0) and c0['close'] < ((c2['open'] + c2['close']) / 2):
-        bearish_pattern = "Evening Star"
 
     return bullish_pattern, bearish_pattern
 
+def check_choch_bullish(df_15m):
+    return df_15m.iloc[-2]['close'] > df_15m['high'].iloc[:-2].tail(10).max()
+
+def check_choch_bearish(df_15m):
+    return df_15m.iloc[-2]['close'] < df_15m['low'].iloc[:-2].tail(10).min()
+
 async def analyze_market(mexc, gate, symbol):
-    """Deep SMC + Chart Patterns + Indicator Analysis Engine"""
     df_4h = await fetch_ohlcv(mexc, gate, symbol, '4h', limit=300)
     df_1h = await fetch_ohlcv(mexc, gate, symbol, '1h', limit=300)
     df_15m = await fetch_ohlcv(mexc, gate, symbol, '15m', limit=150)
-    df_5m = await fetch_ohlcv(mexc, gate, symbol, '5m', limit=100)
 
-    if df_4h is None or df_1h is None or df_15m is None or df_5m is None:
+    if df_4h is None or df_1h is None or df_15m is None:
         return None, 0
 
-    df_4h['EMA_200'] = ta.trend.ema_indicator(df_4h['close'], window=200)
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
-
-    closed_4h = df_4h.iloc[-2]
-    closed_1h = df_1h.iloc[-2]
-
-    strong_support_4h = df_4h['low'].iloc[:-1].tail(50).min()
-    strong_resistance_4h = df_4h['high'].iloc[:-1].tail(50).max()
-
-    strong_support_1h = df_1h['low'].iloc[:-1].tail(30).min()
-    strong_resistance_1h = df_1h['high'].iloc[:-1].tail(30).max()
-
-    strong_support = min(strong_support_4h, strong_support_1h)
-    strong_resistance = max(strong_resistance_4h, strong_resistance_1h)
-
-    minor_support = df_15m['low'].iloc[:-1].tail(20).min()
-    minor_resistance = df_15m['high'].iloc[:-1].tail(20).max()
-
-    double_bottom, double_top = detect_chart_patterns(df_15m)
-
-    fvg_bullish = df_1h.iloc[-2]['low'] > df_1h.iloc[-4]['high']
-    fvg_bearish = df_1h.iloc[-2]['high'] < df_1h.iloc[-4]['low']
-
-    recent_low_sweep = df_15m.iloc[-2]['low'] < df_15m['low'].iloc[:-3].tail(15).min()
-    recent_high_sweep = df_15m.iloc[-2]['high'] > df_15m['high'].iloc[:-3].tail(15).max()
-
-    df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
+    df_15m['EMA_50'] = ta.trend.ema_indicator(df_15m['close'], window=50)
     df_15m['ATR'] = ta.volatility.average_true_range(df_15m['high'], df_15m['low'], df_15m['close'], window=14)
     df_15m['Vol_MA'] = df_15m['volume'].rolling(window=20).mean()
-    df_5m['RSI'] = ta.momentum.rsi(df_5m['close'], window=14)
 
+    closed_1h = df_1h.iloc[-2]
     closed_15m = df_15m.iloc[-2]
-    closed_5m = df_5m.iloc[-2]
     close_price, atr = closed_15m['close'], closed_15m['ATR']
 
-    at_strong_supp = (close_price - strong_support) / close_price < 0.012
-    at_strong_res = (strong_resistance - close_price) / close_price < 0.012
+    strong_support = min(df_4h['low'].iloc[:-1].tail(50).min(), df_1h['low'].iloc[:-1].tail(30).min())
+    strong_resistance = max(df_4h['high'].iloc[:-1].tail(50).max(), df_1h['high'].iloc[:-1].tail(30).max())
 
+    double_bottom, double_top = detect_chart_patterns(df_15m)
+    recent_low_sweep = closed_15m['low'] < df_15m['low'].iloc[:-3].tail(15).min()
+    recent_high_sweep = closed_15m['high'] > df_15m['high'].iloc[:-3].tail(15).max()
     bullish_15m, bearish_15m = detect_candlestick_patterns(df_15m)
-    bids_vol, asks_vol = await check_order_book_depth(mexc, gate, symbol)
+
+    has_bullish_choch = check_choch_bullish(df_15m)
+    has_bearish_choch = check_choch_bearish(df_15m)
+    
+    # Moderate volume threshold (1.0x Average) for easier SHORT/LONG execution
+    has_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.0)
 
     confidence_score = 0
     reasons = []
     signal_type = None
 
-    # --- BUY / LONG SETUP ---
-    if closed_1h['close'] > closed_1h['EMA_50'] or closed_4h['close'] > closed_4h['EMA_200']:
-        confidence_score += 20
-        reasons.append("Trend: HTF Bullish Market Structure")
-
-        if at_strong_supp:
+    # LONG SETUP
+    if (closed_1h['close'] > closed_1h['EMA_50']) and has_bullish_choch and has_volume:
+        confidence_score += 35
+        reasons.append("SMC Structure: Bullish CHOCH Confirmed (15m)")
+        if (close_price - strong_support) / close_price < 0.01:
             confidence_score += 20
-            reasons.append("SMC Zone: HTF Strong Support / Demand Block")
-
+            reasons.append("SMC Zone: HTF Support Block")
         if double_bottom:
             confidence_score += 15
-            reasons.append("Chart Pattern: Double Bottom (W-Pattern) Confirmed")
-
+            reasons.append("Pattern: W-Pattern Formed")
         if recent_low_sweep:
-            confidence_score += 10
-            reasons.append("SMC Liquidity: Sell-Side Liquidity Swept")
-
-        if fvg_bullish:
-            confidence_score += 10
-            reasons.append("SMC Imbalance: Bullish FVG Retest")
-
+            confidence_score += 15
+            reasons.append("Liquidity: Sell-Side Swept")
         if bullish_15m:
             confidence_score += 10
-            reasons.append(f"Candle Pattern: {bullish_15m} (Closed Candle)")
+            reasons.append(f"Candlestick: {bullish_15m}")
 
-        if 25 <= closed_15m['RSI'] <= 38 or 25 <= closed_5m['RSI'] <= 38:
-            confidence_score += 5
-            reasons.append(f"RSI Oversold Zone: 15m RSI ({round(closed_15m['RSI'], 1)})")
+        if confidence_score >= 75:
+            signal_type = "FUTURE LONG 🚀" if confidence_score >= 80 else "SPOT BUY 🛒"
 
-        if bids_vol > asks_vol:
-            confidence_score += 5
-            reasons.append("Order Book: Higher Buying Pressure")
-
-        if closed_15m['volume'] > closed_15m['Vol_MA']:
-            confidence_score += 5
-            reasons.append("Volume: High Volume Surge")
-
-        if confidence_score >= 80:  # An daga min maki zuwa 80% domin tabbatar da tsaro
-            signal_type = "FUTURE LONG 🚀" if confidence_score >= 85 else "SPOT BUY 🛒"
-
-    # --- SELL / SHORT SETUP ---
-    elif closed_1h['close'] < closed_1h['EMA_50'] or closed_4h['close'] < closed_4h['EMA_200']:
-        confidence_score += 20
-        reasons.append("Trend: HTF Bearish Market Structure")
-
-        if at_strong_res:
+    # SHORT SETUP (Rage tsauri domin buɗe SHORT cikin sauƙi)
+    elif (closed_15m['close'] < closed_15m['EMA_50']) and (has_bearish_choch or bearish_15m) and has_volume:
+        confidence_score += 35
+        reasons.append("Bearish Structure & Momentum Confirmed (15m)")
+        if (strong_resistance - close_price) / close_price < 0.01:
             confidence_score += 20
-            reasons.append("SMC Zone: HTF Strong Resistance / Supply Block")
-
+            reasons.append("SMC Zone: HTF Resistance Block")
         if double_top:
             confidence_score += 15
-            reasons.append("Chart Pattern: Double Top (M-Pattern) Confirmed")
-
+            reasons.append("Pattern: M-Pattern Formed")
         if recent_high_sweep:
-            confidence_score += 10
-            reasons.append("SMC Liquidity: Buy-Side Liquidity Swept")
-
-        if fvg_bearish:
-            confidence_score += 10
-            reasons.append("SMC Imbalance: Bearish FVG Retest")
-
+            confidence_score += 15
+            reasons.append("Liquidity: Buy-Side Swept")
         if bearish_15m:
             confidence_score += 10
-            reasons.append(f"Candle Pattern: {bearish_15m} (Closed Candle)")
+            reasons.append(f"Candlestick: {bearish_15m}")
 
-        if 62 <= closed_15m['RSI'] <= 78 or 62 <= closed_5m['RSI'] <= 78:
-            confidence_score += 5
-            reasons.append(f"RSI Overbought Zone: 15m RSI ({round(closed_15m['RSI'], 1)})")
-
-        if asks_vol > bids_vol:
-            confidence_score += 5
-            reasons.append("Order Book: Higher Selling Pressure")
-
-        if closed_15m['volume'] > closed_15m['Vol_MA']:
-            confidence_score += 5
-            reasons.append("Volume: High Volume Surge")
-
-        if confidence_score >= 80:
+        if confidence_score >= 75:
             signal_type = "FUTURE SHORT 📉"
 
-    # OPTIMIZED STOP LOSS (ATR 2.5x Multiplier) & TAKE PROFIT
-    if confidence_score >= 80 and signal_type:
+    if confidence_score >= 75 and signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
-            sl = close_price - (atr * 2.5)  # An fadaɗa SL zuwa 2.5x ATR domin samun fili
+            sl = close_price - (atr * 2.0)
             risk = close_price - sl
-            tp1 = close_price + (risk * 1.5)
-            tp2 = close_price + (risk * 2.5)
-            calculated_tp3 = close_price + (risk * 3.5)
-            tp3 = max(calculated_tp3, minor_resistance) if minor_resistance > tp2 else calculated_tp3
+            tp1, tp2, tp3 = close_price + (risk * 1.8), close_price + (risk * 2.8), close_price + (risk * 4.0)
         else:
-            sl = close_price + (atr * 2.5)
+            sl = close_price + (atr * 2.0)
             risk = sl - close_price
-            tp1 = close_price - (risk * 1.5)
-            tp2 = close_price - (risk * 2.5)
-            calculated_tp3 = close_price - (risk * 3.5)
-            tp3 = min(calculated_tp3, minor_support) if minor_support < tp2 else calculated_tp3
+            tp1, tp2, tp3 = close_price - (risk * 1.8), close_price - (risk * 2.8), close_price - (risk * 4.0)
 
         return {
             'symbol': symbol,
             'signal_type': signal_type,
             'confidence': f"{confidence_score}%",
             'entry': format_price(close_price),
-            'tp1': format_price(tp1), 
-            'tp2': format_price(tp2), 
+            'tp1': format_price(tp1),
+            'tp2': format_price(tp2),
             'tp3': format_price(tp3),
             'sl': format_price(sl),
             'reasons': reasons
@@ -460,7 +369,6 @@ async def analyze_market(mexc, gate, symbol):
     return None, confidence_score
 
 async def market_scanner():
-    """Fast Continuous Scanner Loop with Paper Trading Support"""
     print("=== STARTING PRECISION SMC SIGNAL & PAPER TRADING SCANNER ===", flush=True)
     send_telegram_message("🎯 Precision Crypto Signal & Auto Paper Trading Engine Active!")
 
@@ -470,20 +378,16 @@ async def market_scanner():
     try:
         while True:
             current_time = time.time()
-            print(f"[SCANNER] Cycle started at {time.strftime('%H:%M:%S')}", flush=True)
-
             await check_active_paper_trades(mexc, gate)
 
             for index, symbol in enumerate(TOP_COINS, start=1):
                 signal_data, current_score = await analyze_market(mexc, gate, symbol)
-                print(f"[SCANNER] ({index}/{len(TOP_COINS)}) {symbol} Score: {current_score}%", flush=True)
 
                 if signal_data:
                     signal_type = signal_data['signal_type']
                     signal_key = f"{symbol}_{signal_type}"
 
-                    last_sent = SENT_SIGNALS.get(signal_key, 0)
-                    if (current_time - last_sent) >= COOLDOWN_SECONDS:
+                    if (current_time - SENT_SIGNALS.get(signal_key, 0)) >= COOLDOWN_SECONDS:
                         SENT_SIGNALS[signal_key] = current_time
 
                         reasons_text = "\n".join([f"- {r}" for r in signal_data['reasons']])
@@ -503,30 +407,24 @@ async def market_scanner():
                             f"💡 Confluence & Confirmations:\n{reasons_text}"
                         )
                         send_telegram_message(msg)
-
                         execute_paper_trade(signal_data)
 
                 await asyncio.sleep(0.3)
 
-            print("[SCANNER] Cycle finished. Resting for 2 minutes...", flush=True)
             await asyncio.sleep(120)
 
     finally:
         await mexc.close()
         await gate.close()
 
-def main_loop():
-    """Auto-restart Async Loop"""
+if __name__ == '__main__':
+    server_thread = Thread(target=run_flask)
+    server_thread.daemon = True
+    server_thread.start()
+
     while True:
         try:
             asyncio.run(market_scanner())
         except Exception as e:
             print(f"[CRITICAL ERROR] Scanner crashed: {e}. Restarting in 10 seconds...", flush=True)
             time.sleep(10)
-
-if __name__ == '__main__':
-    server_thread = Thread(target=run_flask)
-    server_thread.daemon = True
-    server_thread.start()
-
-    main_loop()
