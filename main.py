@@ -17,7 +17,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Institutional SMC, Chart Patterns, Indicators & Paper Trading Engine Active!", 200
+    return "Institutional SMC Engine Active with Strict 80%+ Score Filters!", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -123,7 +123,7 @@ def execute_paper_trade(signal_data):
         f"🎯 **Target TP2:** {signal_data['tp2']}\n"
         f"🎯 **Target TP3:** {signal_data['tp3']}\n"
         f"⏱️ **Time:** {trade['open_time']}\n\n"
-        f"💡 **Trade Confirmations & Reasons:**\n{reasons_formatted}"
+        f"💡 **High-Confluence Confirmations:**\n{reasons_formatted}"
     )
     send_telegram_message(paper_msg)
 
@@ -297,54 +297,61 @@ async def analyze_market(mexc, gate, symbol):
     has_bullish_choch = check_choch_bullish(df_15m)
     has_bearish_choch = check_choch_bearish(df_15m)
     
-    # Moderate volume threshold (1.0x Average) for easier SHORT/LONG execution
-    has_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.0)
+    # Institutional Volume Requirement (1.2x Average Volume)
+    has_strong_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.2)
+
+    at_strong_res = (strong_resistance - close_price) / close_price < 0.012
+    at_strong_supp = (close_price - strong_support) / close_price < 0.012
 
     confidence_score = 0
     reasons = []
     signal_type = None
 
-    # LONG SETUP
-    if (closed_1h['close'] > closed_1h['EMA_50']) and has_bullish_choch and has_volume:
+    # STRICT LONG SETUP (Requires 80%+ Score)
+    if (closed_1h['close'] > closed_1h['EMA_50']) and has_bullish_choch and has_strong_volume:
         confidence_score += 35
         reasons.append("SMC Structure: Bullish CHOCH Confirmed (15m)")
-        if (close_price - strong_support) / close_price < 0.01:
+        reasons.append("Institutional Volume: Above 1.2x Average")
+
+        if at_strong_supp:
             confidence_score += 20
-            reasons.append("SMC Zone: HTF Support Block")
+            reasons.append("SMC Zone: HTF Strong Demand Block")
         if double_bottom:
             confidence_score += 15
             reasons.append("Pattern: W-Pattern Formed")
         if recent_low_sweep:
             confidence_score += 15
-            reasons.append("Liquidity: Sell-Side Swept")
+            reasons.append("Liquidity: Sell-Side Liquidity Swept")
         if bullish_15m:
             confidence_score += 10
             reasons.append(f"Candlestick: {bullish_15m}")
 
-        if confidence_score >= 75:
-            signal_type = "FUTURE LONG 🚀" if confidence_score >= 80 else "SPOT BUY 🛒"
+        if confidence_score >= 80:
+            signal_type = "FUTURE LONG 🚀" if confidence_score >= 85 else "SPOT BUY 🛒"
 
-    # SHORT SETUP (Rage tsauri domin buɗe SHORT cikin sauƙi)
-    elif (closed_15m['close'] < closed_15m['EMA_50']) and (has_bearish_choch or bearish_15m) and has_volume:
+    # STRICT SHORT SETUP (Requires 85%+ Score - High Quality Reversal or Continuation)
+    elif (has_bearish_choch or (at_strong_res and bearish_15m)) and has_strong_volume:
         confidence_score += 35
-        reasons.append("Bearish Structure & Momentum Confirmed (15m)")
-        if (strong_resistance - close_price) / close_price < 0.01:
+        reasons.append("SMC Structure: Bearish Breakdown/Reversal Confirmed")
+        reasons.append("Institutional Volume: Above 1.2x Average")
+
+        if at_strong_res:
             confidence_score += 20
-            reasons.append("SMC Zone: HTF Resistance Block")
+            reasons.append("SMC Zone: HTF Strong Supply/Resistance Block")
         if double_top:
             confidence_score += 15
             reasons.append("Pattern: M-Pattern Formed")
         if recent_high_sweep:
             confidence_score += 15
-            reasons.append("Liquidity: Buy-Side Swept")
+            reasons.append("Liquidity: Buy-Side Liquidity Swept")
         if bearish_15m:
             confidence_score += 10
             reasons.append(f"Candlestick: {bearish_15m}")
 
-        if confidence_score >= 75:
+        if confidence_score >= 85:
             signal_type = "FUTURE SHORT 📉"
 
-    if confidence_score >= 75 and signal_type:
+    if signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
             sl = close_price - (atr * 2.0)
             risk = close_price - sl
@@ -370,7 +377,7 @@ async def analyze_market(mexc, gate, symbol):
 
 async def market_scanner():
     print("=== STARTING PRECISION SMC SIGNAL & PAPER TRADING SCANNER ===", flush=True)
-    send_telegram_message("🎯 Precision Crypto Signal & Auto Paper Trading Engine Active!")
+    send_telegram_message("🎯 Precision Crypto Signal Engine Active (Strict High Quality Mode)!")
 
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
