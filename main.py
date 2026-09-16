@@ -175,7 +175,7 @@ async def check_active_paper_trades(mexc, gate):
                 closed = True
                 pnl = (trade['entry'] - trade['sl']) * trade['amount']
                 reason = "🛡️ Breakeven Exit" if trade['hit_tp1'] else "🛑 Stop Loss Hit"
-            elif current_price <= trade['tp3']:
+            elif current_price >= trade['tp3']:
                 closed = True
                 pnl = (trade['entry'] - trade['tp3']) * trade['amount']
                 reason = "🎯 TP3 Hit (Maximum Profit!)"
@@ -208,6 +208,7 @@ async def fetch_ohlcv(mexc, gate, symbol, timeframe, limit=300):
         pass
 
     return None
+
 async def check_order_book_depth(mexc, gate, symbol):
     try:
         order_book = await mexc.fetch_order_book(symbol, limit=20)
@@ -296,7 +297,7 @@ async def analyze_market(mexc, gate, symbol):
 
     has_bullish_choch = check_choch_bullish(df_15m)
     has_bearish_choch = check_choch_bearish(df_15m)
-    
+
     # Institutional Volume Requirement (1.2x Average Volume)
     has_strong_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.2)
 
@@ -382,56 +383,66 @@ async def market_scanner():
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
 
-    try:
-        while True:
+    while True:
+        try:
             current_time = time.time()
             await check_active_paper_trades(mexc, gate)
 
             for index, symbol in enumerate(TOP_COINS, start=1):
-                signal_data, current_score = await analyze_market(mexc, gate, symbol)
+                try:
+                    signal_data, current_score = await analyze_market(mexc, gate, symbol)
 
-                if signal_data:
-                    signal_type = signal_data['signal_type']
-                    signal_key = f"{symbol}_{signal_type}"
+                    if signal_data:
+                        signal_type = signal_data['signal_type']
+                        signal_key = f"{symbol}_{signal_type}"
 
-                    if (current_time - SENT_SIGNALS.get(signal_key, 0)) >= COOLDOWN_SECONDS:
-                        SENT_SIGNALS[signal_key] = current_time
+                        if (current_time - SENT_SIGNALS.get(signal_key, 0)) >= COOLDOWN_SECONDS:
+                            SENT_SIGNALS[signal_key] = current_time
 
-                        reasons_text = "\n".join([f"- {r}" for r in signal_data['reasons']])
-                        leverage_text = "None (Spot Order)" if "SPOT" in signal_type else "5x - 10x (Day/Scalp)"
+                            reasons_text = "\n".join([f"- {r}" for r in signal_data['reasons']])
+                            leverage_text = "None (Spot Order)" if "SPOT" in signal_type else "5x - 10x (Day/Scalp)"
 
-                        msg = (
-                            f"🚨 HIGH PROBABILITY SIGNAL 🚨\n\n"
-                            f"🪙 Coin: {signal_data['symbol']}\n"
-                            f"🎯 Action: {signal_data['signal_type']}\n"
-                            f"📊 Score: {signal_data['confidence']}\n\n"
-                            f"📥 Entry Zone: {signal_data['entry']}\n"
-                            f"🛑 Stop Loss: {signal_data['sl']}\n"
-                            f"🎯 TP 1: {signal_data['tp1']}\n"
-                            f"🎯 TP 2: {signal_data['tp2']}\n"
-                            f"🎯 TP 3: {signal_data['tp3']}\n\n"
-                            f"⚖️ Leverage: {leverage_text}\n\n"
-                            f"💡 Confluence & Confirmations:\n{reasons_text}"
-                        )
-                        send_telegram_message(msg)
-                        execute_paper_trade(signal_data)
+                            msg = (
+                                f"🚨 HIGH PROBABILITY SIGNAL 🚨\n\n"
+                                f"🪙 Coin: {signal_data['symbol']}\n"
+                                f"🎯 Action: {signal_data['signal_type']}\n"
+                                f"📊 Score: {signal_data['confidence']}\n\n"
+                                f"📥 Entry Zone: {signal_data['entry']}\n"
+                                f"🛑 Stop Loss: {signal_data['sl']}\n"
+                                f"🎯 TP 1: {signal_data['tp1']}\n"
+                                f"🎯 TP 2: {signal_data['tp2']}\n"
+                                f"🎯 TP 3: {signal_data['tp3']}\n\n"
+                                f"⚖️ Leverage: {leverage_text}\n\n"
+                                f"💡 Confluence & Confirmations:\n{reasons_text}"
+                            )
+                            send_telegram_message(msg)
+                            execute_paper_trade(signal_data)
+
+                except Exception as inner_e:
+                    print(f"[SCAN ERROR] Failed processing {symbol}: {inner_e}", flush=True)
 
                 await asyncio.sleep(0.3)
 
+            print("=== SCANNER CYCLE COMPLETE - WAITING FOR NEXT LOOP ===", flush=True)
             await asyncio.sleep(120)
 
-    finally:
-        await mexc.close()
-        await gate.close()
+        except Exception as e:
+            print(f"[CRITICAL ERROR] Scanner loop crashed: {e}. Retrying in 10s...", flush=True)
+            await asyncio.sleep(10)
+
+def start_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 if __name__ == '__main__':
-    server_thread = Thread(target=run_flask)
-    server_thread.daemon = True
-    server_thread.start()
+    # Fara Flask Server a Thread daban
+    flask_thread = Thread(target=start_flask, daemon=True)
+    flask_thread.start()
 
-    while True:
-        try:
-            asyncio.run(market_scanner())
-        except Exception as e:
-            print(f"[CRITICAL ERROR] Scanner crashed: {e}. Restarting in 10 seconds...", flush=True)
-            time.sleep(10)
+    # Fara Async Loop na Scanner ta hanyar kariya mai karfi
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(market_scanner())
+    except Exception as fatal_e:
+        print(f"[FATAL ERROR] Main event loop died: {fatal_e}", flush=True)
