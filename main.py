@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Institutional SMC Engine v3.1 (Optimized Filters & Detailed Logs Active)!", 200
+    return "Institutional SMC Engine v3.2 (High-Winrate Filters Active)!", 200
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -262,6 +262,7 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     if df_4h is None or df_1h is None or df_15m is None:
         return None, 0, ["Missing Data"]
 
+    # CALCULATE INDICATORS ACROSS TIMEFRAMES
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
     df_15m['EMA_50'] = ta.trend.ema_indicator(df_15m['close'], window=50)
     df_15m['RSI'] = ta.momentum.rsi(df_15m['close'], window=14)
@@ -277,10 +278,9 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     strong_support = min(df_4h['low'].iloc[:-1].tail(50).min(), df_1h['low'].iloc[:-1].tail(30).min())
     strong_resistance = max(df_4h['high'].iloc[:-1].tail(50).max(), df_1h['high'].iloc[:-1].tail(30).max())
 
-    # OPTIMIZED: Faɗaɗa tazarar Support/Resistance zuwa 2.5% Maimakon 1.5%
     at_strong_supp = (close_price - strong_support) / close_price < 0.025
     at_strong_res = (strong_resistance - close_price) / close_price < 0.025
-    has_strong_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.1)  # OPTIMIZED: 1.1x volume
+    has_strong_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.3) # Increased volume requirement
 
     confidence_score_long = 0
     reasons_long = []
@@ -290,67 +290,67 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     reasons_short = []
     missing_short = []
 
-    # EVALUATE LONG CONFLUENCE
-    if closed_15m['close'] > closed_15m['EMA_50']:
-        confidence_score_long += 20
-        reasons_long.append("15m Trend: Above EMA 50")
+    # EVALUATE LONG CONFLUENCE (Multi-Timeframe Trend Strictness)
+    if closed_1h['close'] > closed_1h['EMA_50'] and closed_15m['close'] > closed_15m['EMA_50']:
+        confidence_score_long += 25
+        reasons_long.append("Multi-Timeframe Trend: 1H & 15M Above EMA 50")
     else:
-        missing_long.append("Below 15m EMA50")
+        missing_long.append("Below 1H or 15M EMA50")
 
     if has_strong_volume:
         confidence_score_long += 20
-        reasons_long.append("Volume: Strong Volume Spike (>1.1x)")
+        reasons_long.append("Volume: Strong Institutional Volume Spike (>1.3x)")
     else:
         missing_long.append("Low Volume")
 
-    if rsi < 45:  # OPTIMIZED: RSI < 45
+    if 30 <= rsi <= 45:
         confidence_score_long += 20
-        reasons_long.append(f"RSI Momentum: Low Zone ({rsi:.1f})")
+        reasons_long.append(f"RSI Momentum: Optimal Bullish Zone ({rsi:.1f})")
     else:
-        missing_long.append(f"RSI High ({rsi:.1f})")
+        missing_long.append(f"RSI Outside Optimal Zone ({rsi:.1f})")
 
     if at_strong_supp:
         confidence_score_long += 20
-        reasons_long.append("SMC Zone: HTF Demand Block")
+        reasons_long.append("SMC Zone: HTF Demand Block / Support")
     else:
-        missing_long.append("Not in Demand Zone")
+        missing_long.append("Not in Key Demand Zone")
 
-    if ob_ratio >= 1.2:  # OPTIMIZED: 1.2x OrderBook
-        confidence_score_long += 20
-        reasons_long.append(f"Order Book: Buyer Support ({ob_ratio:.1f}x)")
+    if ob_ratio >= 1.4:
+        confidence_score_long += 15
+        reasons_long.append(f"Order Book: Strong Buyer Support ({ob_ratio:.1f}x)")
     else:
-        missing_long.append(f"Weak OrderBook ({ob_ratio:.1f}x)")
+        missing_long.append(f"Weak OrderBook Support ({ob_ratio:.1f}x)")
 
     # EVALUATE SHORT CONFLUENCE
-    if closed_15m['close'] < closed_15m['EMA_50']:
-        confidence_score_short += 20
-        reasons_short.append("15m Trend: Below EMA 50")
+    if closed_1h['close'] < closed_1h['EMA_50'] and closed_15m['close'] < closed_15m['EMA_50']:
+        confidence_score_short += 25
+        reasons_short.append("Multi-Timeframe Trend: 1H & 15M Below EMA 50")
     else:
-        missing_short.append("Above 15m EMA50")
+        missing_short.append("Above 1H or 15M EMA50")
 
     if has_strong_volume:
         confidence_score_short += 20
-        reasons_short.append("Volume: Strong Volume Spike (>1.1x)")
+        reasons_short.append("Volume: Strong Institutional Volume Spike (>1.3x)")
     else:
         missing_short.append("Low Volume")
 
-    if rsi > 55:  # OPTIMIZED: RSI > 55
+    if 55 <= rsi <= 70:
         confidence_score_short += 20
-        reasons_short.append(f"RSI Momentum: High Zone ({rsi:.1f})")
+        reasons_short.append(f"RSI Momentum: Optimal Bearish Zone ({rsi:.1f})")
     else:
-        missing_short.append(f"RSI Low ({rsi:.1f})")
+        missing_short.append(f"RSI Outside Optimal Zone ({rsi:.1f})")
 
     if at_strong_res:
         confidence_score_short += 20
-        reasons_short.append("SMC Zone: HTF Supply Block")
+        reasons_short.append("SMC Zone: HTF Supply Block / Resistance")
     else:
-        missing_short.append("Not in Supply Zone")
+        missing_short.append("Not in Key Supply Zone")
 
-    if ob_ratio <= 0.8:
-        confidence_score_short += 20
-        reasons_short.append(f"Order Book: Selling Pressure ({ob_ratio:.1f}x)")
+    if ob_ratio <= 0.7:
+        confidence_score_short += 15
+        reasons_short.append(f"Order Book: Heavy Selling Pressure ({ob_ratio:.1f}x)")
     else:
-        missing_short.append(f"Weak Selling OB ({ob_ratio:.1f}x)")
+        missing_short.append(f"Weak Selling OrderBook ({ob_ratio:.1f}x)")
 
     is_btc_dependent = symbol in BTC_CORRELATED_COINS
 
@@ -358,16 +358,16 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     final_score = 0
     final_reasons = []
 
-    # OPTIMIZED THRESHOLDS: 60% SCORE FOR SPOT / 65% FOR FUTURE
-    if confidence_score_long >= 60:
+    # HIGH WIN-RATE QUALIFICATION THRESHOLDS: 75% FOR SPOT / 80% FOR FUTURES
+    if confidence_score_long >= 75:
         if not is_btc_dependent or (is_btc_dependent and btc_trend == "BULLISH"):
-            signal_type = "FUTURE LONG 🚀" if confidence_score_long >= 65 else "SPOT BUY 🛒"
+            signal_type = "FUTURE LONG 🚀" if confidence_score_long >= 80 else "SPOT BUY 🛒"
             final_score = confidence_score_long
             final_reasons = reasons_long
             if is_btc_dependent:
                 final_reasons.append("BTC Alignment: BTC in Uptrend")
 
-    elif confidence_score_short >= 65:
+    elif confidence_score_short >= 80:
         if not is_btc_dependent or (is_btc_dependent and btc_trend == "BEARISH"):
             signal_type = "FUTURE SHORT 📉"
             final_score = confidence_score_short
@@ -379,14 +379,15 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     active_missing = missing_long if confidence_score_long >= confidence_score_short else missing_short
 
     if signal_type:
+        # OPTIMIZED NOISE-RESISTANT STOP LOSS (3.5x ATR) & REWARD RATIO
         if "BUY" in signal_type or "LONG" in signal_type:
-            sl = close_price - (atr * 2.2)
+            sl = close_price - (atr * 3.5)
             risk = close_price - sl
-            tp1, tp2, tp3 = close_price + (risk * 1.5), close_price + (risk * 2.5), close_price + (risk * 3.5)
+            tp1, tp2, tp3 = close_price + (risk * 1.5), close_price + (risk * 2.5), close_price + (risk * 4.0)
         else:
-            sl = close_price + (atr * 2.2)
+            sl = close_price + (atr * 3.5)
             risk = sl - close_price
-            tp1, tp2, tp3 = close_price - (risk * 1.5), close_price - (risk * 2.5), close_price - (risk * 3.5)
+            tp1, tp2, tp3 = close_price - (risk * 1.5), close_price - (risk * 2.5), close_price - (risk * 4.0)
 
         return {
             'symbol': symbol,
@@ -403,8 +404,8 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     return None, current_max_score, active_missing
 
 async def market_scanner():
-    print("=== STARTING PRECISION SMC SIGNAL ENGINE V3.1 (OPTIMIZED & LOGGED) ===", flush=True)
-    send_telegram_message("🎯 Precision Crypto Signal Engine Active (Optimized Thresholds Enabled)!")
+    print("=== STARTING PRECISION SMC SIGNAL ENGINE V3.2 (HIGH WIN-RATE FILTERS) ===", flush=True)
+    send_telegram_message("🎯 Precision Crypto Signal Engine Active (High Win-Rate Thresholds & Wider SL Active)!")
 
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
@@ -457,7 +458,7 @@ async def market_scanner():
                                 f"🎯 TP 1: {signal_data['tp1']}\n"
                                 f"🎯 TP 2: {signal_data['tp2']}\n"
                                 f"🎯 TP 3: {signal_data['tp3']}\n\n"
-                                f"⚖️ Leverage: {leverage_text}\n\n"
+                                f"⚖️️ Leverage: {leverage_text}\n\n"
                                 f"💡 Confluence & Confirmations:\n{reasons_text}"
                             )
                             send_telegram_message(msg)
