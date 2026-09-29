@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Institutional SMC Engine v3 (News Shield + BTC Correlation Active)!", 200
+    return "Institutional SMC Engine v3.1 (Optimized Filters & Detailed Logs Active)!", 200
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -79,21 +79,19 @@ def format_price(price):
         return f"{price:.2f}"
 
 def check_high_impact_news():
-    """Gano High-Impact News da ke tafe ta CryptoPanic & News APIs"""
+    """Gano High-Impact News da ke tafe tare da kariya daga krashewa (Fail-Safe)"""
     try:
-        # CryptoPanic free public news endpoint
         url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&filter=important"
-        res = requests.get(url, timeout=5)
+        res = requests.get(url, timeout=3)
         if res.status_code == 200:
             data = res.json()
             results = data.get('results', [])
             for post in results[:5]:
                 title = post.get('title', '').lower()
-                # Tace hot news keywords
                 if any(kw in title for kw in ['cpi', 'fomc', 'sec', 'fed rate', 'binance', 'inflation', 'crackdown']):
                     return True, post.get('title')
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[NEWS CHECK NOTICE] News API bypassed cleanly: {e}", flush=True)
     return False, None
 
 def execute_paper_trade(signal_data):
@@ -262,7 +260,7 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     df_15m = await fetch_ohlcv(mexc, gate, symbol, '15m', limit=150)
 
     if df_4h is None or df_1h is None or df_15m is None:
-        return None, 0
+        return None, 0, ["Missing Data"]
 
     df_1h['EMA_50'] = ta.trend.ema_indicator(df_1h['close'], window=50)
     df_15m['EMA_50'] = ta.trend.ema_indicator(df_15m['close'], window=50)
@@ -279,57 +277,80 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     strong_support = min(df_4h['low'].iloc[:-1].tail(50).min(), df_1h['low'].iloc[:-1].tail(30).min())
     strong_resistance = max(df_4h['high'].iloc[:-1].tail(50).max(), df_1h['high'].iloc[:-1].tail(30).max())
 
-    at_strong_supp = (close_price - strong_support) / close_price < 0.015
-    at_strong_res = (strong_resistance - close_price) / close_price < 0.015
-    has_strong_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.2)
+    # OPTIMIZED: Faɗaɗa tazarar Support/Resistance zuwa 2.5% Maimakon 1.5%
+    at_strong_supp = (close_price - strong_support) / close_price < 0.025
+    at_strong_res = (strong_resistance - close_price) / close_price < 0.025
+    has_strong_volume = closed_15m['volume'] >= (closed_15m['Vol_MA'] * 1.1)  # OPTIMIZED: 1.1x volume
 
     confidence_score_long = 0
     reasons_long = []
+    missing_long = []
 
     confidence_score_short = 0
     reasons_short = []
+    missing_short = []
 
-    # LONG CONFLUENCE
+    # EVALUATE LONG CONFLUENCE
     if closed_15m['close'] > closed_15m['EMA_50']:
         confidence_score_long += 20
         reasons_long.append("15m Trend: Above EMA 50")
+    else:
+        missing_long.append("Below 15m EMA50")
 
     if has_strong_volume:
-        confidence_score_long += 15
-        reasons_long.append("Volume: Institutional Volume Spike (>1.2x)")
+        confidence_score_long += 20
+        reasons_long.append("Volume: Strong Volume Spike (>1.1x)")
+    else:
+        missing_long.append("Low Volume")
 
-    if rsi < 40:
-        confidence_score_long += 15
-        reasons_long.append(f"RSI Momentum: Oversold Zone ({rsi:.1f})")
+    if rsi < 45:  # OPTIMIZED: RSI < 45
+        confidence_score_long += 20
+        reasons_long.append(f"RSI Momentum: Low Zone ({rsi:.1f})")
+    else:
+        missing_long.append(f"RSI High ({rsi:.1f})")
 
     if at_strong_supp:
         confidence_score_long += 20
-        reasons_long.append("SMC Zone: HTF Strong Demand Block")
+        reasons_long.append("SMC Zone: HTF Demand Block")
+    else:
+        missing_long.append("Not in Demand Zone")
 
-    if ob_ratio >= 1.3:
-        confidence_score_long += 15
-        reasons_long.append(f"Order Book: Strong Buyer Support ({ob_ratio:.1f}x)")
+    if ob_ratio >= 1.2:  # OPTIMIZED: 1.2x OrderBook
+        confidence_score_long += 20
+        reasons_long.append(f"Order Book: Buyer Support ({ob_ratio:.1f}x)")
+    else:
+        missing_long.append(f"Weak OrderBook ({ob_ratio:.1f}x)")
 
-    # SHORT CONFLUENCE
+    # EVALUATE SHORT CONFLUENCE
     if closed_15m['close'] < closed_15m['EMA_50']:
         confidence_score_short += 20
         reasons_short.append("15m Trend: Below EMA 50")
+    else:
+        missing_short.append("Above 15m EMA50")
 
     if has_strong_volume:
-        confidence_score_short += 15
-        reasons_short.append("Volume: Institutional Volume Spike (>1.2x)")
+        confidence_score_short += 20
+        reasons_short.append("Volume: Strong Volume Spike (>1.1x)")
+    else:
+        missing_short.append("Low Volume")
 
-    if rsi > 60:
-        confidence_score_short += 15
-        reasons_short.append(f"RSI Momentum: Overbought Zone ({rsi:.1f})")
+    if rsi > 55:  # OPTIMIZED: RSI > 55
+        confidence_score_short += 20
+        reasons_short.append(f"RSI Momentum: High Zone ({rsi:.1f})")
+    else:
+        missing_short.append(f"RSI Low ({rsi:.1f})")
 
     if at_strong_res:
         confidence_score_short += 20
-        reasons_short.append("SMC Zone: HTF Strong Supply Block")
+        reasons_short.append("SMC Zone: HTF Supply Block")
+    else:
+        missing_short.append("Not in Supply Zone")
 
-    if ob_ratio <= 0.7:
-        confidence_score_short += 15
-        reasons_short.append(f"Order Book: Heavy Selling Pressure ({ob_ratio:.1f}x)")
+    if ob_ratio <= 0.8:
+        confidence_score_short += 20
+        reasons_short.append(f"Order Book: Selling Pressure ({ob_ratio:.1f}x)")
+    else:
+        missing_short.append(f"Weak Selling OB ({ob_ratio:.1f}x)")
 
     is_btc_dependent = symbol in BTC_CORRELATED_COINS
 
@@ -337,15 +358,16 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
     final_score = 0
     final_reasons = []
 
-    if confidence_score_long >= 80:
+    # OPTIMIZED THRESHOLDS: 60% SCORE FOR SPOT / 65% FOR FUTURE
+    if confidence_score_long >= 60:
         if not is_btc_dependent or (is_btc_dependent and btc_trend == "BULLISH"):
-            signal_type = "FUTURE LONG 🚀" if confidence_score_long >= 85 else "SPOT BUY 🛒"
+            signal_type = "FUTURE LONG 🚀" if confidence_score_long >= 65 else "SPOT BUY 🛒"
             final_score = confidence_score_long
             final_reasons = reasons_long
             if is_btc_dependent:
                 final_reasons.append("BTC Alignment: BTC in Uptrend")
 
-    elif confidence_score_short >= 85:
+    elif confidence_score_short >= 65:
         if not is_btc_dependent or (is_btc_dependent and btc_trend == "BEARISH"):
             signal_type = "FUTURE SHORT 📉"
             final_score = confidence_score_short
@@ -354,16 +376,17 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
                 final_reasons.append("BTC Alignment: BTC in Downtrend")
 
     current_max_score = max(confidence_score_long, confidence_score_short)
+    active_missing = missing_long if confidence_score_long >= confidence_score_short else missing_short
 
     if signal_type:
         if "BUY" in signal_type or "LONG" in signal_type:
-            sl = close_price - (atr * 2.5)
+            sl = close_price - (atr * 2.2)
             risk = close_price - sl
-            tp1, tp2, tp3 = close_price + (risk * 1.8), close_price + (risk * 2.8), close_price + (risk * 4.0)
+            tp1, tp2, tp3 = close_price + (risk * 1.5), close_price + (risk * 2.5), close_price + (risk * 3.5)
         else:
-            sl = close_price + (atr * 2.5)
+            sl = close_price + (atr * 2.2)
             risk = sl - close_price
-            tp1, tp2, tp3 = close_price - (risk * 1.8), close_price - (risk * 2.8), close_price - (risk * 4.0)
+            tp1, tp2, tp3 = close_price - (risk * 1.5), close_price - (risk * 2.5), close_price - (risk * 3.5)
 
         return {
             'symbol': symbol,
@@ -375,13 +398,13 @@ async def analyze_market(mexc, gate, symbol, btc_trend):
             'tp3': format_price(tp3),
             'sl': format_price(sl),
             'reasons': final_reasons
-        }, final_score
+        }, final_score, []
 
-    return None, current_max_score
+    return None, current_max_score, active_missing
 
 async def market_scanner():
-    print("=== STARTING PRECISION SMC SIGNAL ENGINE V3 (NEWS SHIELD ACTIVE) ===", flush=True)
-    send_telegram_message("🎯 Precision Crypto Signal Engine Active (News Shield Protection Engaged)!")
+    print("=== STARTING PRECISION SMC SIGNAL ENGINE V3.1 (OPTIMIZED & LOGGED) ===", flush=True)
+    send_telegram_message("🎯 Precision Crypto Signal Engine Active (Optimized Thresholds Enabled)!")
 
     mexc = ccxt.mexc({'enableRateLimit': True})
     gate = ccxt.gate({'enableRateLimit': True})
@@ -396,19 +419,23 @@ async def market_scanner():
             if has_news:
                 print(f"⚠️ [NEWS SHIELD ACTIVE] High-Impact Event Detected: '{news_title}'. Pausing scanner cycle!", flush=True)
                 send_telegram_message(f"⚠️ **NEWS SHIELD PROTECT** ⚠️\n\nHigh Impact News Event Detected: *{news_title}*\n\nPausing market scanning for safety.")
-                await asyncio.sleep(600)  # Tsaya na minti 10 sannan ka sake duba labarai
+                await asyncio.sleep(600)
                 continue
 
             # MATAKI NA 2: DUBUN BTC TREND
             btc_trend = await get_btc_trend(mexc, gate)
             print(f"--- CURRENT BTC MARKET TREND: {btc_trend} ---", flush=True)
 
-            # MATAKI NA 3: SCANNING NA COINS
+            # MATAKI NA 3: SCANNING NA COINS WITH DETAILED LOGS
             for index, symbol in enumerate(TOP_COINS, start=1):
                 try:
-                    signal_data, current_score = await analyze_market(mexc, gate, symbol, btc_trend)
+                    signal_data, current_score, missing_reasons = await analyze_market(mexc, gate, symbol, btc_trend)
 
-                    print(f"[{index}/{len(TOP_COINS)}] Scanned {symbol} | Confluence Score: {current_score}%", flush=True)
+                    if missing_reasons:
+                        missing_text = ", ".join(missing_reasons)
+                        print(f"[{index}/{len(TOP_COINS)}] Scanned {symbol} | Confluence Score: {current_score}% | Missing: [{missing_text}]", flush=True)
+                    else:
+                        print(f"[{index}/{len(TOP_COINS)}] Scanned {symbol} | Confluence Score: {current_score}% | SIGNAL GENERATED! 🚀", flush=True)
 
                     if signal_data:
                         signal_type = signal_data['signal_type']
